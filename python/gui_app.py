@@ -321,14 +321,15 @@ def main():
 
     results_dir = default_results
     output_dir = default_output
+    st.sidebar.markdown("DOI: [10.5281/zenodo.19038805](https://doi.org/10.5281/zenodo.19038805)")
+    
+    with st.sidebar.expander("Variables & abbreviations", expanded=False):
+        st.markdown(VARIABLE_GLOSSARY_MARKDOWN)
     with st.sidebar.expander("Data source (advanced)", expanded=False):
         results_dir = st.text_input("MM_Results folder", default_results)
         output_dir = st.text_input("Output folder", default_output)
         if st.button("Reload data"):
             st.cache_data.clear()
-    st.sidebar.markdown("DOI: [10.5281/zenodo.19038805](https://doi.org/10.5281/zenodo.19038805)")
-    with st.sidebar.expander("Variables & abbreviations", expanded=False):
-        st.markdown(VARIABLE_GLOSSARY_MARKDOWN)
 
     results_dir = os.path.abspath(results_dir)
     output_dir = os.path.abspath(output_dir)
