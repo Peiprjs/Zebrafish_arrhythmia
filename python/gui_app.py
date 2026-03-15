@@ -88,6 +88,28 @@ def _group_label(record):
     return f"{record['exposure']}_{record['concentration']}"
 
 
+def _pretty_metric_label(name):
+    label_map = {
+        "arrhythmia_risk_score": "Arrhythmia risk score",
+        "arrhythmia_probability": "Arrhythmia risk score (alias)",
+        "mean_ibi_ms": "Mean inter-beat interval (ms)",
+        "sdnn_ms": "SDNN (ms)",
+        "rmssd_ms": "RMSSD (ms)",
+        "cv_ibi": "Coefficient of variation of IBI",
+        "pnn50": "pNN50 (%)",
+        "mean_hr_bpm": "Mean heart rate (bpm)",
+    }
+    return label_map.get(name, name.replace("_", " "))
+
+
+def _pretty_group_label(name):
+    label_map = {
+        "concentration": "dose concentration",
+        "exposure": "exposure condition",
+    }
+    return label_map.get(name, name.replace("_", " "))
+
+
 def _interpolate_to_relative_grid(time_ms, values, n_points=INTERP_POINTS):
     time_ms = np.asarray(time_ms, dtype=float)
     values = np.asarray(values, dtype=float)
@@ -229,12 +251,12 @@ def _plot_fish_profile(record):
     peak_times_s = np.asarray(record["peak_times_ms"], dtype=float) / 1000.0
 
     fig, ax = plt.subplots(figsize=(11, 4))
-    ax.plot(time_s, contraction, linewidth=0.8, label="Contraction")
+    ax.plot(time_s, contraction, linewidth=0.8, label="Contraction signal")
     if len(peak_indices) > 0:
-        ax.plot(peak_times_s, contraction[peak_indices], "rv", markersize=6, label="Peaks")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Contraction (a.u.)")
-    ax.set_title(f"Contraction profile – {record['sample']}")
+        ax.plot(peak_times_s, contraction[peak_indices], "rv", markersize=6, label="Detected peaks")
+    ax.set_xlabel("Recording time (s)")
+    ax.set_ylabel("Contraction amplitude (a.u.)")
+    ax.set_title(f"Cardiac contraction signal with detected peaks - {record['sample']}")
     ax.legend(loc="upper right")
     ax.grid(alpha=0.2)
     st.pyplot(fig)
@@ -250,9 +272,9 @@ def _plot_speed_profile(record):
 
     fig, ax = plt.subplots(figsize=(11, 3.5))
     ax.plot(speed_time / 1000.0, speed_values, linewidth=0.8, color="tab:orange")
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Speed (a.u.)")
-    ax.set_title(f"Speed-of-contraction profile – {record['sample']}")
+    ax.set_xlabel("Recording time (s)")
+    ax.set_ylabel("Contraction speed (a.u.)")
+    ax.set_title(f"Speed of contraction across recording - {record['sample']}")
     ax.grid(alpha=0.2)
     st.pyplot(fig)
     plt.close(fig)
@@ -268,18 +290,19 @@ def _plot_fish_hrv(record):
 
     if len(ibi_time_s) > 0:
         ax1.plot(ibi_time_s, ibi_values, "o-", markersize=3.5, linewidth=1.0, label="IBI")
-        ax1.set_ylabel("IBI (ms)")
-        ax1.set_title("Inter-beat intervals over time")
+        ax1.set_xlabel("Recording time (s)")
+        ax1.set_ylabel("Inter-beat interval (ms)")
+        ax1.set_title("Beat-to-beat timing (IBI) across recording")
         ax1.grid(alpha=0.2)
 
     if len(rolling_time_s) > 0:
         ax2.plot(rolling_time_s, rolling_values, "o-", markersize=3.5, linewidth=1.0, color="tab:green")
         ax2.set_ylabel("Rolling RMSSD (ms)")
-        ax2.set_xlabel("Time (s)")
-        ax2.set_title("HRV over time (rolling RMSSD)")
+        ax2.set_xlabel("Recording time (s)")
+        ax2.set_title("Short-term HRV trend (rolling RMSSD)")
         ax2.grid(alpha=0.2)
     else:
-        ax2.text(0.02, 0.5, "Not enough beats for rolling RMSSD", transform=ax2.transAxes)
+        ax2.text(0.02, 0.5, "Not enough beats to compute rolling RMSSD", transform=ax2.transAxes)
         ax2.set_axis_off()
 
     plt.tight_layout()
@@ -296,7 +319,7 @@ def _plot_group_aggregate(grid_pct, aggregate, title, y_label):
         ax.plot(grid_pct, mean, linewidth=1.5, label=f"{label} (n={n})")
         ax.fill_between(grid_pct, mean - std, mean + std, alpha=0.2)
 
-    ax.set_xlabel("Relative recording time (%)")
+    ax.set_xlabel("Relative progress through recording (%)")
     ax.set_ylabel(y_label)
     ax.set_title(title)
     ax.grid(alpha=0.2)
@@ -323,6 +346,8 @@ def main():
         st.session_state["results_dir"] = default_results
     if "output_dir" not in st.session_state:
         st.session_state["output_dir"] = default_output
+    if "show_advanced_tabs" not in st.session_state:
+        st.session_state["show_advanced_tabs"] = False
 
     results_dir = os.path.abspath(st.session_state["results_dir"])
     output_dir = os.path.abspath(st.session_state["output_dir"])
@@ -360,6 +385,11 @@ def main():
     with st.sidebar.expander("Variables & abbreviations", expanded=False):
         st.markdown(VARIABLE_GLOSSARY_MARKDOWN)
     with st.sidebar.expander("Settings", expanded=False):
+        st.checkbox(
+            "Show Model summaries and Conclusions tabs",
+            key="show_advanced_tabs",
+            help="Toggle visibility of the advanced model and interpretation tabs.",
+        )
         st.caption("Data source")
         st.text_input("MM_Results folder", key="results_dir")
         st.text_input("Output folder", key="output_dir")
@@ -380,14 +410,25 @@ def main():
     c2.metric("Exposure groups", int(filtered_df["exposure"].nunique()))
     c3.metric("Dose groups", int(filtered_df["concentration"].nunique()))
 
-    tab_fish, tab_dose, tab_hrv, tab_metrics, tab_models, tab_conclusions = st.tabs([
-        "Fish profile",
-        "Dose profile",
-        "HRV over time",
-        "All variables",
-        "Model summaries",
-        "Conclusions",
-    ])
+    show_advanced_tabs = bool(st.session_state.get("show_advanced_tabs", True))
+    if show_advanced_tabs:
+        tab_fish, tab_dose, tab_hrv, tab_metrics, tab_models, tab_conclusions = st.tabs([
+            "Fish profile",
+            "Dose profile",
+            "HRV over time",
+            "All variables",
+            "Model summaries",
+            "Conclusions",
+        ])
+    else:
+        tab_fish, tab_dose, tab_hrv, tab_metrics = st.tabs([
+            "Fish profile",
+            "Dose profile",
+            "HRV over time",
+            "All variables",
+        ])
+        tab_models = None
+        tab_conclusions = None
 
     with tab_fish:
         fish_record = record_by_sample[selected_sample]
@@ -407,8 +448,8 @@ def main():
             _plot_group_aggregate(
                 grid_pct,
                 aggregate,
-                title="Average contraction profile by exposure/dose",
-                y_label="Contraction (a.u.)",
+                title="Mean contraction waveform by exposure and dose (+/-1 SD)",
+                y_label="Contraction amplitude (a.u.)",
             )
 
     with tab_hrv:
@@ -423,7 +464,7 @@ def main():
             _plot_group_aggregate(
                 grid_pct,
                 aggregate,
-                title="Average HRV (rolling RMSSD) over relative time",
+                title="Mean rolling RMSSD trajectory by exposure and dose (+/-1 SD)",
                 y_label="Rolling RMSSD (ms)",
             )
 
@@ -435,14 +476,23 @@ def main():
             if pd.api.types.is_numeric_dtype(filtered_df[col])
         ]
         if numeric_cols:
-            if "arrhythmia_risk_score" in numeric_cols:
-                default_metric = "arrhythmia_risk_score"
-            elif "arrhythmia_probability" in numeric_cols:
-                default_metric = "arrhythmia_probability"
-            else:
-                default_metric = numeric_cols[0]
+            preferred_metrics = [
+                "mean_ibi_ms",
+                "arrhythmia_risk_score",
+                "arrhythmia_probability",
+            ]
+            default_metric = next(
+                (metric_name for metric_name in preferred_metrics if metric_name in numeric_cols),
+                numeric_cols[0],
+            )
             metric = st.selectbox("Metric distribution", numeric_cols, index=numeric_cols.index(default_metric))
-            group_by = st.selectbox("Group by", ["exposure", "concentration"])
+            group_options = ["exposure", "concentration"]
+            default_group_by = "concentration"
+            group_by = st.selectbox(
+                "Group by",
+                group_options,
+                index=group_options.index(default_group_by),
+            )
 
             grouped_values = []
             labels = []
@@ -487,8 +537,11 @@ def main():
                         "markersize": 5,
                     },
                 )
-                ax.set_title(f"{metric} grouped by {group_by}")
-                ax.set_ylabel(metric)
+                metric_label = _pretty_metric_label(metric)
+                group_label = _pretty_group_label(group_by)
+                ax.set_title(f"Distribution of {metric_label} by {group_label}")
+                ax.set_xlabel(group_label.capitalize())
+                ax.set_ylabel(metric_label)
                 ax.grid(axis="y", alpha=0.2)
                 ax.legend(
                     handles=[
@@ -521,122 +574,124 @@ def main():
                 st.pyplot(fig)
                 plt.close(fig)
 
-    with tab_models:
-        st.caption(f"Model outputs loaded from `{output_dir}`")
-        tables = model_tables
+    if show_advanced_tabs and tab_models is not None:
+        with tab_models:
+            st.caption(f"Model outputs loaded from `{output_dir}`")
+            tables = model_tables
 
-        st.subheader("Regression summary")
-        linear_summary = tables["linear_regression_summary"]
-        logistic_summary = tables["logistic_regression_summary"]
-        trend_summary = tables["linear_trend_summary"]
-        if linear_summary is None and logistic_summary is None and trend_summary is None:
-            st.info("No regression output files found. Run `python data_analysis.py` to generate them.")
-        else:
-            if linear_summary is not None and not linear_summary.empty:
-                c1, c2 = st.columns(2)
-                c1.metric("Linear R²", f"{linear_summary.iloc[0]['r_squared']:.3f}")
-                c2.metric("Linear n", int(linear_summary.iloc[0]["n_samples"]))
-            if logistic_summary is not None and not logistic_summary.empty:
-                c3, c4 = st.columns(2)
-                c3.metric("Logistic accuracy (0.5)", f"{logistic_summary.iloc[0]['accuracy_at_0_5']:.3f}")
-                c4.metric("Logistic McFadden R²", f"{logistic_summary.iloc[0]['mcfadden_pseudo_r2']:.3f}")
+            st.subheader("Regression summary")
+            linear_summary = tables["linear_regression_summary"]
+            logistic_summary = tables["logistic_regression_summary"]
+            trend_summary = tables["linear_trend_summary"]
+            if linear_summary is None and logistic_summary is None and trend_summary is None:
+                st.info("No regression output files found. Run `python data_analysis.py` to generate them.")
+            else:
+                if linear_summary is not None and not linear_summary.empty:
+                    c1, c2 = st.columns(2)
+                    c1.metric("Linear R²", f"{linear_summary.iloc[0]['r_squared']:.3f}")
+                    c2.metric("Linear n", int(linear_summary.iloc[0]["n_samples"]))
+                if logistic_summary is not None and not logistic_summary.empty:
+                    c3, c4 = st.columns(2)
+                    c3.metric("Logistic accuracy (0.5)", f"{logistic_summary.iloc[0]['accuracy_at_0_5']:.3f}")
+                    c4.metric("Logistic McFadden R²", f"{logistic_summary.iloc[0]['mcfadden_pseudo_r2']:.3f}")
+                if trend_summary is not None and not trend_summary.empty:
+                    st.dataframe(trend_summary, use_container_width=True)
+
+                if tables["linear_regression_coefficients"] is not None:
+                    st.markdown("**Linear regression coefficients**")
+                    st.dataframe(tables["linear_regression_coefficients"], use_container_width=True)
+                if tables["logistic_regression_coefficients"] is not None:
+                    st.markdown("**Logistic regression coefficients**")
+                    st.dataframe(tables["logistic_regression_coefficients"], use_container_width=True)
+
+            st.subheader("Unsupervised learning summary")
+            cluster_summary = tables["unsupervised_cluster_summary"]
+            pca_variance = tables["unsupervised_pca_variance"]
+            if cluster_summary is None and pca_variance is None:
+                st.info("No unsupervised output files found. Run `python data_analysis.py` to generate them.")
+            else:
+                if cluster_summary is not None:
+                    st.markdown("**Cluster composition**")
+                    st.dataframe(cluster_summary, use_container_width=True)
+                if pca_variance is not None:
+                    st.markdown("**PCA explained variance**")
+                    st.dataframe(pca_variance, use_container_width=True)
+                if tables["unsupervised_pca_loadings"] is not None:
+                    st.markdown("**PCA loadings**")
+                    st.dataframe(tables["unsupervised_pca_loadings"], use_container_width=True)
+                if tables["unsupervised_assignments"] is not None:
+                    st.markdown("**Sample assignments (preview)**")
+                    st.dataframe(
+                        tables["unsupervised_assignments"].head(20),
+                        use_container_width=True,
+                    )
+
+    if show_advanced_tabs and tab_conclusions is not None:
+        with tab_conclusions:
+            st.subheader("Conclusions for current filter selection")
+            risk_series = filtered_df["arrhythmia_risk_score"].dropna()
+
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Samples in view", int(len(filtered_df)))
+            k2.metric(
+                "Arrhymia rate",
+                f"{100.0 * float(filtered_df['Arrhymia'].astype(float).mean()):.1f}%",
+            )
+            k3.metric(
+                "Mean risk score",
+                f"{float(risk_series.mean()):.3f}" if len(risk_series) > 0 else "n/a",
+            )
+
+            top_cols = [
+                col for col in [
+                    "sample",
+                    "exposure",
+                    "concentration",
+                    "arrhythmia_risk_score",
+                    "Arrhymia",
+                    "paired_ttest_pvalue_vs_control0_mean_ibi",
+                ]
+                if col in filtered_df.columns
+            ]
+            if top_cols:
+                st.markdown("**Top 5 highest-risk samples**")
+                top_risk = filtered_df.sort_values(
+                    "arrhythmia_risk_score",
+                    ascending=False,
+                    na_position="last",
+                ).head(5)
+                st.dataframe(top_risk[top_cols], use_container_width=True)
+
+            trend_summary = model_tables["linear_trend_summary"]
             if trend_summary is not None and not trend_summary.empty:
-                st.dataframe(trend_summary, use_container_width=True)
-
-            if tables["linear_regression_coefficients"] is not None:
-                st.markdown("**Linear regression coefficients**")
-                st.dataframe(tables["linear_regression_coefficients"], use_container_width=True)
-            if tables["logistic_regression_coefficients"] is not None:
-                st.markdown("**Logistic regression coefficients**")
-                st.dataframe(tables["logistic_regression_coefficients"], use_container_width=True)
-
-        st.subheader("Unsupervised learning summary")
-        cluster_summary = tables["unsupervised_cluster_summary"]
-        pca_variance = tables["unsupervised_pca_variance"]
-        if cluster_summary is None and pca_variance is None:
-            st.info("No unsupervised output files found. Run `python data_analysis.py` to generate them.")
-        else:
-            if cluster_summary is not None:
-                st.markdown("**Cluster composition**")
-                st.dataframe(cluster_summary, use_container_width=True)
-            if pca_variance is not None:
-                st.markdown("**PCA explained variance**")
-                st.dataframe(pca_variance, use_container_width=True)
-            if tables["unsupervised_pca_loadings"] is not None:
-                st.markdown("**PCA loadings**")
-                st.dataframe(tables["unsupervised_pca_loadings"], use_container_width=True)
-            if tables["unsupervised_assignments"] is not None:
-                st.markdown("**Sample assignments (preview)**")
-                st.dataframe(
-                    tables["unsupervised_assignments"].head(20),
-                    use_container_width=True,
+                slope = float(trend_summary.iloc[0]["slope"])
+                p_value = float(trend_summary.iloc[0]["p_value"])
+                direction = "increases" if slope > 0 else "decreases"
+                st.markdown(
+                    f"- Concentration trend: risk score **{direction}** with concentration "
+                    f"(slope={slope:.4f}, p={p_value:.4g})."
                 )
 
-    with tab_conclusions:
-        st.subheader("Conclusions for current filter selection")
-        risk_series = filtered_df["arrhythmia_risk_score"].dropna()
+            logistic_summary = model_tables["logistic_regression_summary"]
+            if logistic_summary is not None and not logistic_summary.empty:
+                acc = float(logistic_summary.iloc[0]["accuracy_at_0_5"])
+                pseudo_r2 = float(logistic_summary.iloc[0]["mcfadden_pseudo_r2"])
+                st.markdown(
+                    f"- Logistic model summary: accuracy={acc:.3f}, McFadden R²={pseudo_r2:.3f}."
+                )
 
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Samples in view", int(len(filtered_df)))
-        k2.metric(
-            "Arrhymia rate",
-            f"{100.0 * float(filtered_df['Arrhymia'].astype(float).mean()):.1f}%",
-        )
-        k3.metric(
-            "Mean risk score",
-            f"{float(risk_series.mean()):.3f}" if len(risk_series) > 0 else "n/a",
-        )
-
-        top_cols = [
-            col for col in [
-                "sample",
-                "exposure",
-                "concentration",
-                "arrhythmia_risk_score",
-                "Arrhymia",
-                "paired_ttest_pvalue_vs_control0_mean_ibi",
-            ]
-            if col in filtered_df.columns
-        ]
-        if top_cols:
-            st.markdown("**Top 5 highest-risk samples**")
-            top_risk = filtered_df.sort_values(
-                "arrhythmia_risk_score",
-                ascending=False,
-                na_position="last",
-            ).head(5)
-            st.dataframe(top_risk[top_cols], use_container_width=True)
-
-        trend_summary = model_tables["linear_trend_summary"]
-        if trend_summary is not None and not trend_summary.empty:
-            slope = float(trend_summary.iloc[0]["slope"])
-            p_value = float(trend_summary.iloc[0]["p_value"])
-            direction = "increases" if slope > 0 else "decreases"
-            st.markdown(
-                f"- Concentration trend: risk score **{direction}** with concentration "
-                f"(slope={slope:.4f}, p={p_value:.4g})."
-            )
-
-        logistic_summary = model_tables["logistic_regression_summary"]
-        if logistic_summary is not None and not logistic_summary.empty:
-            acc = float(logistic_summary.iloc[0]["accuracy_at_0_5"])
-            pseudo_r2 = float(logistic_summary.iloc[0]["mcfadden_pseudo_r2"])
-            st.markdown(
-                f"- Logistic model summary: accuracy={acc:.3f}, McFadden R²={pseudo_r2:.3f}."
-            )
-
-        cluster_summary = model_tables["unsupervised_cluster_summary"]
-        if cluster_summary is not None and not cluster_summary.empty:
-            highest_cluster = cluster_summary.sort_values(
-                "arrhythmia_rate",
-                ascending=False,
-            ).iloc[0]
-            st.markdown(
-                f"- Highest-risk discovered cluster: `{highest_cluster['model']}` "
-                f"cluster {int(highest_cluster['cluster_id'])} with "
-                f"arrhythmia_rate={float(highest_cluster['arrhythmia_rate']):.3f} "
-                f"(n={int(highest_cluster['n_samples'])})."
-            )
+            cluster_summary = model_tables["unsupervised_cluster_summary"]
+            if cluster_summary is not None and not cluster_summary.empty:
+                highest_cluster = cluster_summary.sort_values(
+                    "arrhythmia_rate",
+                    ascending=False,
+                ).iloc[0]
+                st.markdown(
+                    f"- Highest-risk discovered cluster: `{highest_cluster['model']}` "
+                    f"cluster {int(highest_cluster['cluster_id'])} with "
+                    f"arrhythmia_rate={float(highest_cluster['arrhythmia_rate']):.3f} "
+                    f"(n={int(highest_cluster['n_samples'])})."
+                )
 
 
 if __name__ == "__main__":
