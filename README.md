@@ -70,3 +70,5 @@ Optional dashboard:
 ```bash
 streamlit run gui_app.py
 ```
+
+The dashboard includes a **Model summaries** tab that reads regression and unsupervised-learning CSV outputs from the configured output folder.

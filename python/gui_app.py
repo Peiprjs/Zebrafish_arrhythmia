@@ -18,6 +18,17 @@ from data_analysis import SUMMARY_COLUMNS, load_all_sample_timeseries
 
 
 INTERP_POINTS = 300
+MODEL_OUTPUT_FILES = {
+    "linear_regression_summary": "linear_regression_summary.csv",
+    "linear_regression_coefficients": "linear_regression_coefficients.csv",
+    "logistic_regression_summary": "logistic_regression_summary.csv",
+    "logistic_regression_coefficients": "logistic_regression_coefficients.csv",
+    "linear_trend_summary": "linear_trend_summary.csv",
+    "unsupervised_cluster_summary": "unsupervised_cluster_summary.csv",
+    "unsupervised_assignments": "unsupervised_assignments.csv",
+    "unsupervised_pca_variance": "unsupervised_pca_variance.csv",
+    "unsupervised_pca_loadings": "unsupervised_pca_loadings.csv",
+}
 
 
 def _safe_float_sort_key(value):
@@ -153,6 +164,18 @@ def _load_dashboard_data(results_dir):
     return records, summary_df
 
 
+@st.cache_data(show_spinner=False)
+def _load_model_output_tables(output_dir):
+    tables = {}
+    for key, filename in MODEL_OUTPUT_FILES.items():
+        path = os.path.join(output_dir, filename)
+        if os.path.isfile(path):
+            tables[key] = pd.read_csv(path)
+        else:
+            tables[key] = None
+    return tables
+
+
 def _plot_fish_profile(record):
     time_s = np.asarray(record["time_ms"], dtype=float) / 1000.0
     contraction = np.asarray(record["contraction_values"], dtype=float)
@@ -242,14 +265,18 @@ def main():
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_results = os.path.abspath(os.path.join(script_dir, "..", "MM_Results"))
+    default_output = os.path.abspath(os.path.join(script_dir, "..", "output"))
 
     results_dir = default_results
+    output_dir = default_output
     with st.sidebar.expander("Data source (advanced)", expanded=False):
         results_dir = st.text_input("MM_Results folder", default_results)
+        output_dir = st.text_input("Output folder", default_output)
         if st.button("Reload data"):
             st.cache_data.clear()
 
     results_dir = os.path.abspath(results_dir)
+    output_dir = os.path.abspath(output_dir)
     try:
         records, summary_df = _load_dashboard_data(results_dir)
     except Exception as exc:
@@ -289,11 +316,12 @@ def main():
     c2.metric("Exposure groups", int(filtered_df["exposure"].nunique()))
     c3.metric("Dose groups", int(filtered_df["concentration"].nunique()))
 
-    tab_fish, tab_dose, tab_hrv, tab_metrics = st.tabs([
+    tab_fish, tab_dose, tab_hrv, tab_metrics, tab_models = st.tabs([
         "Fish profile",
         "Dose profile",
         "HRV over time",
         "All variables",
+        "Model summaries",
     ])
 
     with tab_fish:
@@ -427,6 +455,57 @@ def main():
                 plt.tight_layout()
                 st.pyplot(fig)
                 plt.close(fig)
+
+    with tab_models:
+        st.caption(f"Model outputs loaded from `{output_dir}`")
+        tables = _load_model_output_tables(output_dir)
+
+        st.subheader("Regression summary")
+        linear_summary = tables["linear_regression_summary"]
+        logistic_summary = tables["logistic_regression_summary"]
+        trend_summary = tables["linear_trend_summary"]
+        if linear_summary is None and logistic_summary is None and trend_summary is None:
+            st.info("No regression output files found. Run `python data_analysis.py` to generate them.")
+        else:
+            if linear_summary is not None and not linear_summary.empty:
+                c1, c2 = st.columns(2)
+                c1.metric("Linear R²", f"{linear_summary.iloc[0]['r_squared']:.3f}")
+                c2.metric("Linear n", int(linear_summary.iloc[0]["n_samples"]))
+            if logistic_summary is not None and not logistic_summary.empty:
+                c3, c4 = st.columns(2)
+                c3.metric("Logistic accuracy (0.5)", f"{logistic_summary.iloc[0]['accuracy_at_0_5']:.3f}")
+                c4.metric("Logistic McFadden R²", f"{logistic_summary.iloc[0]['mcfadden_pseudo_r2']:.3f}")
+            if trend_summary is not None and not trend_summary.empty:
+                st.dataframe(trend_summary, use_container_width=True)
+
+            if tables["linear_regression_coefficients"] is not None:
+                st.markdown("**Linear regression coefficients**")
+                st.dataframe(tables["linear_regression_coefficients"], use_container_width=True)
+            if tables["logistic_regression_coefficients"] is not None:
+                st.markdown("**Logistic regression coefficients**")
+                st.dataframe(tables["logistic_regression_coefficients"], use_container_width=True)
+
+        st.subheader("Unsupervised learning summary")
+        cluster_summary = tables["unsupervised_cluster_summary"]
+        pca_variance = tables["unsupervised_pca_variance"]
+        if cluster_summary is None and pca_variance is None:
+            st.info("No unsupervised output files found. Run `python data_analysis.py` to generate them.")
+        else:
+            if cluster_summary is not None:
+                st.markdown("**Cluster composition**")
+                st.dataframe(cluster_summary, use_container_width=True)
+            if pca_variance is not None:
+                st.markdown("**PCA explained variance**")
+                st.dataframe(pca_variance, use_container_width=True)
+            if tables["unsupervised_pca_loadings"] is not None:
+                st.markdown("**PCA loadings**")
+                st.dataframe(tables["unsupervised_pca_loadings"], use_container_width=True)
+            if tables["unsupervised_assignments"] is not None:
+                st.markdown("**Sample assignments (preview)**")
+                st.dataframe(
+                    tables["unsupervised_assignments"].head(20),
+                    use_container_width=True,
+                )
 
 
 if __name__ == "__main__":
