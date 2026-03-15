@@ -39,6 +39,7 @@ VARIABLE_GLOSSARY_MARKDOWN = """
 - `concentration`: dose level.
 - `well`, `fish`: plate well index and fish index.
 - `n_peaks`: number of detected contraction peaks.
+- `sawtooth_peak`: marks detected peaks that were grouped as sawtooth events.
 - `IBI`: inter-beat interval (time between consecutive peaks, ms).
 - `mean_ibi_ms`: mean IBI.
 - `HRV`: heart-rate variability.
@@ -240,12 +241,33 @@ def _plot_fish_profile(record):
     time_s = (time_ms - recording_start_ms) / 1000.0
     contraction = np.asarray(record["contraction_values"], dtype=float)
     peak_indices = np.asarray(record["peak_indices"], dtype=int)
+    sawtooth_peak = np.asarray(record.get("sawtooth_peak", []), dtype=bool)
     peak_times_s = (np.asarray(record["peak_times_ms"], dtype=float) - recording_start_ms) / 1000.0
 
     fig, ax = plt.subplots(figsize=(11, 4))
     ax.plot(time_s, contraction, linewidth=0.8, label="Contraction signal")
     if len(peak_indices) > 0:
-        ax.plot(peak_times_s, contraction[peak_indices], "rv", markersize=6, label="Detected peaks")
+        if sawtooth_peak.size == len(peak_indices):
+            normal_mask = ~sawtooth_peak
+            sawtooth_mask = sawtooth_peak
+            if np.any(normal_mask):
+                ax.plot(
+                    peak_times_s[normal_mask],
+                    contraction[peak_indices[normal_mask]],
+                    "rv",
+                    markersize=6,
+                    label="Detected peaks",
+                )
+            if np.any(sawtooth_mask):
+                ax.plot(
+                    peak_times_s[sawtooth_mask],
+                    contraction[peak_indices[sawtooth_mask]],
+                    "bv",
+                    markersize=6,
+                    label="Detected sawtooth peaks",
+                )
+        else:
+            ax.plot(peak_times_s, contraction[peak_indices], "rv", markersize=6, label="Detected peaks")
     ax.set_xlim(left=0.0)
     ax.set_xlabel("Recording time (s)")
     ax.set_ylabel("Contraction amplitude (a.u.)")
