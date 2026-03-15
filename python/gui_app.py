@@ -93,11 +93,11 @@ def _pretty_metric_label(name):
         "arrhythmia_risk_score": "Arrhythmia risk score",
         "arrhythmia_probability": "Arrhythmia risk score (alias)",
         "mean_ibi_ms": "Mean inter-beat interval (ms)",
-        "sdnn_ms": "SDNN (ms)",
-        "rmssd_ms": "RMSSD (ms)",
-        "cv_ibi": "Coefficient of variation of IBI",
-        "pnn50": "pNN50 (%)",
-        "mean_hr_bpm": "Mean heart rate (bpm)",
+        "sdnn_ms": "Standard deviation of inter-beat interval (ms)",
+        "rmssd_ms": "Root mean square of successive interval differences (ms)",
+        "cv_ibi": "Coefficient of variation of inter-beat interval",
+        "pnn50": "Percentage of successive interval differences greater than 50 ms (%)",
+        "mean_hr_bpm": "Mean heart rate (beats per minute)",
     }
     return label_map.get(name, name.replace("_", " "))
 
@@ -245,15 +245,18 @@ def _load_model_output_tables(output_dir):
 
 
 def _plot_fish_profile(record):
-    time_s = np.asarray(record["time_ms"], dtype=float) / 1000.0
+    time_ms = np.asarray(record["time_ms"], dtype=float)
+    recording_start_ms = float(time_ms[0]) if len(time_ms) > 0 else 0.0
+    time_s = (time_ms - recording_start_ms) / 1000.0
     contraction = np.asarray(record["contraction_values"], dtype=float)
     peak_indices = np.asarray(record["peak_indices"], dtype=int)
-    peak_times_s = np.asarray(record["peak_times_ms"], dtype=float) / 1000.0
+    peak_times_s = (np.asarray(record["peak_times_ms"], dtype=float) - recording_start_ms) / 1000.0
 
     fig, ax = plt.subplots(figsize=(11, 4))
     ax.plot(time_s, contraction, linewidth=0.8, label="Contraction signal")
     if len(peak_indices) > 0:
         ax.plot(peak_times_s, contraction[peak_indices], "rv", markersize=6, label="Detected peaks")
+    ax.set_xlim(left=0.0)
     ax.set_xlabel("Recording time (s)")
     ax.set_ylabel("Contraction amplitude (a.u.)")
     ax.set_title(f"Cardiac contraction signal with detected peaks - {record['sample']}")
@@ -270,8 +273,17 @@ def _plot_speed_profile(record):
         st.info("No speed-of-contraction profile available for this fish.")
         return
 
+    contraction_time_ms = np.asarray(record["time_ms"], dtype=float)
+    recording_start_ms = (
+        float(contraction_time_ms[0])
+        if len(contraction_time_ms) > 0
+        else float(speed_time[0])
+    )
+    speed_time_s = (speed_time - recording_start_ms) / 1000.0
+
     fig, ax = plt.subplots(figsize=(11, 3.5))
-    ax.plot(speed_time / 1000.0, speed_values, linewidth=0.8, color="tab:orange")
+    ax.plot(speed_time_s, speed_values, linewidth=0.8, color="tab:orange")
+    ax.set_xlim(left=0.0)
     ax.set_xlabel("Recording time (s)")
     ax.set_ylabel("Contraction speed (a.u.)")
     ax.set_title(f"Speed of contraction across recording - {record['sample']}")
@@ -281,28 +293,42 @@ def _plot_speed_profile(record):
 
 
 def _plot_fish_hrv(record):
-    ibi_time_s = np.asarray(record["ibi_time_ms"], dtype=float) / 1000.0
+    contraction_time_ms = np.asarray(record["time_ms"], dtype=float)
+    recording_start_ms = float(contraction_time_ms[0]) if len(contraction_time_ms) > 0 else 0.0
+    ibi_time_s = (np.asarray(record["ibi_time_ms"], dtype=float) - recording_start_ms) / 1000.0
     ibi_values = np.asarray(record["ibi_values_ms"], dtype=float)
-    rolling_time_s = np.asarray(record["rolling_rmssd_time_ms"], dtype=float) / 1000.0
+    rolling_time_s = (
+        np.asarray(record["rolling_rmssd_time_ms"], dtype=float) - recording_start_ms
+    ) / 1000.0
     rolling_values = np.asarray(record["rolling_rmssd_ms"], dtype=float)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 6), sharex=False)
 
     if len(ibi_time_s) > 0:
-        ax1.plot(ibi_time_s, ibi_values, "o-", markersize=3.5, linewidth=1.0, label="IBI")
+        ax1.plot(ibi_time_s, ibi_values, "o-", markersize=3.5, linewidth=1.0, label="Inter-beat interval")
+        ax1.set_xlim(left=0.0)
         ax1.set_xlabel("Recording time (s)")
         ax1.set_ylabel("Inter-beat interval (ms)")
-        ax1.set_title("Beat-to-beat timing (IBI) across recording")
+        ax1.set_title("Beat-to-beat inter-beat interval across recording")
         ax1.grid(alpha=0.2)
 
     if len(rolling_time_s) > 0:
         ax2.plot(rolling_time_s, rolling_values, "o-", markersize=3.5, linewidth=1.0, color="tab:green")
-        ax2.set_ylabel("Rolling RMSSD (ms)")
+        ax2.set_xlim(left=0.0)
+        ax2.set_ylabel("Rolling root mean square of successive interval differences (ms)")
         ax2.set_xlabel("Recording time (s)")
-        ax2.set_title("Short-term HRV trend (rolling RMSSD)")
+        ax2.set_title(
+            "Short-term heart rate variability trend "
+            "(rolling root mean square of successive interval differences)"
+        )
         ax2.grid(alpha=0.2)
     else:
-        ax2.text(0.02, 0.5, "Not enough beats to compute rolling RMSSD", transform=ax2.transAxes)
+        ax2.text(
+            0.02,
+            0.5,
+            "Not enough beats to compute rolling root mean square of successive interval differences",
+            transform=ax2.transAxes,
+        )
         ax2.set_axis_off()
 
     plt.tight_layout()
@@ -459,13 +485,19 @@ def main():
             value_key="rolling_rmssd_ms",
         )
         if not aggregate:
-            st.info("Not enough beats to compute rolling RMSSD trends for selected samples.")
+            st.info(
+                "Not enough beats to compute rolling root mean square of "
+                "successive interval differences for selected samples."
+            )
         else:
             _plot_group_aggregate(
                 grid_pct,
                 aggregate,
-                title="Mean rolling RMSSD trajectory by exposure and dose (+/-1 SD)",
-                y_label="Rolling RMSSD (ms)",
+                title=(
+                    "Mean rolling root mean square of successive interval differences "
+                    "by exposure and dose (+/-1 SD)"
+                ),
+                y_label="Rolling root mean square of successive interval differences (ms)",
             )
 
     with tab_metrics:

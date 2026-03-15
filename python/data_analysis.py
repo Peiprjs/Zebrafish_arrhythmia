@@ -106,7 +106,24 @@ def list_result_folders(results_dir):
 # Peak detection
 # ---------------------------------------------------------------------------
 
-def detect_peaks(time_ms, signal, prominence_factor=0.3, distance_ms=200.0):
+def _rolling_median(values, window_samples):
+    """Return centered rolling median with edge support."""
+    series = pd.Series(np.asarray(values, dtype=float))
+    return (
+        series
+        .rolling(window=max(1, int(window_samples)), center=True, min_periods=1)
+        .median()
+        .to_numpy(dtype=float)
+    )
+
+
+def detect_peaks(
+    time_ms,
+    signal,
+    prominence_factor=0.3,
+    distance_ms=200.0,
+    baseline_window_ms=800.0,
+):
     """Detect contraction peaks in the signal.
 
     Parameters
@@ -116,9 +133,12 @@ def detect_peaks(time_ms, signal, prominence_factor=0.3, distance_ms=200.0):
     signal : array-like
         Contraction signal values.
     prominence_factor : float
-        Minimum peak prominence as a fraction of the signal range.
+        Minimum peak prominence as a fraction of the detrended signal range.
     distance_ms : float
         Minimum distance between peaks in milliseconds.
+    baseline_window_ms : float
+        Window size for rolling-median baseline estimation used to remove slow
+        baseline drift before peak picking.
 
     Returns
     -------
@@ -127,13 +147,45 @@ def detect_peaks(time_ms, signal, prominence_factor=0.3, distance_ms=200.0):
     peak_times : ndarray
         Times (ms) of detected peaks.
     """
+    time_ms = np.asarray(time_ms, dtype=float)
+    signal = np.asarray(signal, dtype=float)
+    if len(time_ms) < 3 or len(signal) < 3:
+        return np.array([], dtype=int), np.array([], dtype=float)
+
     dt = np.median(np.diff(time_ms))
+    if not np.isfinite(dt) or dt <= 0:
+        return np.array([], dtype=int), np.array([], dtype=float)
+
     distance_samples = max(1, int(distance_ms / dt))
-    prominence = prominence_factor * (np.max(signal) - np.min(signal))
+    baseline_samples = max(3, int(baseline_window_ms / dt))
+    if baseline_samples % 2 == 0:
+        baseline_samples += 1
+
+    baseline = _rolling_median(signal, baseline_samples)
+    detrended_signal = signal - baseline
+    detrended_range = np.max(detrended_signal) - np.min(detrended_signal)
+    if not np.isfinite(detrended_range) or detrended_range <= 0:
+        return np.array([], dtype=int), np.array([], dtype=float)
+
+    prominence = max(np.finfo(float).eps, prominence_factor * detrended_range)
 
     peak_indices, _ = find_peaks(
-        signal, prominence=prominence, distance=distance_samples
+        detrended_signal, prominence=prominence, distance=distance_samples
     )
+
+    # Fallback to raw-signal detection when detrending is overly conservative.
+    if len(peak_indices) < 2:
+        raw_range = np.max(signal) - np.min(signal)
+        if np.isfinite(raw_range) and raw_range > 0:
+            raw_prominence = max(np.finfo(float).eps, prominence_factor * raw_range)
+            raw_peak_indices, _ = find_peaks(
+                signal,
+                prominence=raw_prominence,
+                distance=distance_samples,
+            )
+            if len(raw_peak_indices) > len(peak_indices):
+                peak_indices = raw_peak_indices
+
     return peak_indices, time_ms[peak_indices]
 
 
