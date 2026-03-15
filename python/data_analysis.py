@@ -194,10 +194,11 @@ def detect_peaks(
     time_ms,
     signal,
     prominence_factor=0.3,
-    distance_ms=140.0,
+    distance_ms=50.0,
     baseline_window_ms=800.0,
+    sawtooth_group_distance_ms=500.0,
 ):
-    """Detect contraction peaks in the signal.
+    """Detect contraction peaks in the signal and handle sawtooth profiles.
 
     Parameters
     ----------
@@ -208,26 +209,30 @@ def detect_peaks(
     prominence_factor : float
         Minimum peak prominence as a fraction of the detrended signal range.
     distance_ms : float
-        Minimum distance between peaks in milliseconds.
+        Minimum distance between peaks in milliseconds (used for initial peak picking).
     baseline_window_ms : float
         Window size for rolling-median baseline estimation used to remove slow
         baseline drift before peak picking.
+    sawtooth_group_distance_ms : float
+        Maximum distance between consecutive initial peaks to group them into a sawtooth event.
 
     Returns
     -------
     peak_indices : ndarray
-        Indices of detected peaks.
+        Indices of detected final peaks.
     peak_times : ndarray
-        Times (ms) of detected peaks.
+        Times (ms) of detected final peaks.
+    sawtooth_peak : ndarray
+        Boolean array indicating whether each final peak was part of a sawtooth event.
     """
     time_ms = np.asarray(time_ms, dtype=float)
     signal = np.asarray(signal, dtype=float)
     if len(time_ms) < 3 or len(signal) < 3:
-        return np.array([], dtype=int), np.array([], dtype=float)
+        return np.array([], dtype=int), np.array([], dtype=float), np.array([], dtype=bool)
 
     dt = np.median(np.diff(time_ms))
     if not np.isfinite(dt) or dt <= 0:
-        return np.array([], dtype=int), np.array([], dtype=float)
+        return np.array([], dtype=int), np.array([], dtype=float), np.array([], dtype=bool)
 
     distance_samples = max(1, int(distance_ms / dt))
     baseline_samples = max(3, int(baseline_window_ms / dt))
@@ -238,7 +243,7 @@ def detect_peaks(
     detrended_signal = signal - baseline
     detrended_range = np.max(detrended_signal) - np.min(detrended_signal)
     if not np.isfinite(detrended_range) or detrended_range <= 0:
-        return np.array([], dtype=int), np.array([], dtype=float)
+        return np.array([], dtype=int), np.array([], dtype=float), np.array([], dtype=bool)
 
     lower_q, upper_q = PEAK_PROMINENCE_TRIM_PERCENTILES
     detrended_trimmed_range = np.percentile(detrended_signal, upper_q) - np.percentile(detrended_signal, lower_q)
@@ -270,7 +275,78 @@ def detect_peaks(
             if len(raw_peak_indices) > len(peak_indices):
                 peak_indices = raw_peak_indices
 
-    return peak_indices, time_ms[peak_indices]
+    if len(peak_indices) == 0:
+        return np.array([], dtype=int), np.array([], dtype=float), np.array([], dtype=bool)
+
+    # Group sawtooth peaks
+    # Use a data-driven constraint on the grouping window so we do not
+    # merge distinct heartbeats when their true inter-beat interval is
+    # shorter than the default sawtooth_group_distance_ms.
+    effective_group_distance_ms = sawtooth_group_distance_ms
+    max_group_span_ms = None
+    if len(peak_indices) > 1:
+        peak_times_ms = time_ms[peak_indices]
+        ibis = np.diff(peak_times_ms)
+        finite_ibis = ibis[np.isfinite(ibis) & (ibis > 0)]
+        if finite_ibis.size > 0:
+            median_ibi = np.median(finite_ibis)
+            # Limit the grouping distance so it cannot exceed a fraction of
+            # the observed median inter-peak interval.
+            dynamic_window = 0.5 * median_ibi
+            if dynamic_window > 0:
+                effective_group_distance_ms = min(sawtooth_group_distance_ms, dynamic_window)
+            # Also prevent any single group from spanning much more than a
+            # typical beat interval.
+            max_group_span_ms = median_ibi
+
+    final_peak_indices = []
+    sawtooth_flags = []
+
+    current_group = [peak_indices[0]]
+
+    for i in range(1, len(peak_indices)):
+        prev_idx = current_group[-1]
+        curr_idx = peak_indices[i]
+
+        time_diff_prev = time_ms[curr_idx] - time_ms[prev_idx]
+        time_diff_group_start = time_ms[curr_idx] - time_ms[current_group[0]]
+
+        # If the time difference between the current peak and the last peak in the group
+        # is within the (possibly tightened) threshold, and the overall group span is
+        # not excessive, add it to the group.
+        if (
+            time_diff_prev <= effective_group_distance_ms
+            and (max_group_span_ms is None or time_diff_group_start <= max_group_span_ms)
+        ):
+            current_group.append(curr_idx)
+        else:
+            # Process the completed group
+            if len(current_group) > 1:
+                # Find the index of the peak with maximum amplitude in the original signal
+                amplitudes = signal[current_group]
+                max_amp_index_in_group = np.argmax(amplitudes)
+                final_peak_indices.append(current_group[max_amp_index_in_group])
+                sawtooth_flags.append(True)
+            else:
+                final_peak_indices.append(current_group[0])
+                sawtooth_flags.append(False)
+
+            # Start a new group
+            current_group = [curr_idx]
+
+    # Process the last group
+    if current_group:
+        if len(current_group) > 1:
+            amplitudes = signal[current_group]
+            max_amp_index_in_group = np.argmax(amplitudes)
+            final_peak_indices.append(current_group[max_amp_index_in_group])
+            sawtooth_flags.append(True)
+        else:
+            final_peak_indices.append(current_group[0])
+            sawtooth_flags.append(False)
+
+    final_peak_indices = np.array(final_peak_indices, dtype=int)
+    return final_peak_indices, time_ms[final_peak_indices], np.array(sawtooth_flags, dtype=bool)
 
 
 # ---------------------------------------------------------------------------
@@ -907,6 +983,7 @@ def run_unsupervised_models(summary_df, output_dir):
 # ---------------------------------------------------------------------------
 
 def plot_contraction_with_peaks(time_ms, signal, peak_indices, peak_times,
+                                sawtooth_peak,
                                 ibi_ms, sample_label, output_path):
     """Save a figure showing the contraction signal, detected peaks, and intervals."""
     fig, axes = plt.subplots(2, 1, figsize=(12, 7), gridspec_kw={"height_ratios": [3, 1]})
@@ -914,7 +991,26 @@ def plot_contraction_with_peaks(time_ms, signal, peak_indices, peak_times,
     # Top: contraction + peaks
     ax = axes[0]
     ax.plot(time_ms / 1000, signal, linewidth=0.7, label="Contraction")
-    ax.plot(peak_times / 1000, signal[peak_indices], "rv", markersize=8, label="Peaks")
+
+    # Separate normal peaks and sawtooth peaks for plotting
+    if sawtooth_peak is not None:
+        # Robustly coerce to a 1D boolean NumPy array for elementwise operations
+        sawtooth_arr = np.asarray(sawtooth_peak, dtype=bool)
+        if sawtooth_arr.ndim != 1:
+            sawtooth_arr = sawtooth_arr.ravel()
+
+        if sawtooth_arr.size == len(peak_indices):
+            normal_mask = ~sawtooth_arr
+            sawtooth_mask = sawtooth_arr
+
+            ax.plot(peak_times[normal_mask] / 1000, signal[peak_indices[normal_mask]], "rv", markersize=8, label="Peaks")
+            if np.any(sawtooth_mask):
+                ax.plot(peak_times[sawtooth_mask] / 1000, signal[peak_indices[sawtooth_mask]], "bv", markersize=8, label="Sawtooth Peaks")
+        else:
+            # Fallback: length mismatch, plot all peaks as normal
+            ax.plot(peak_times / 1000, signal[peak_indices], "rv", markersize=8, label="Peaks")
+    else:
+        ax.plot(peak_times / 1000, signal[peak_indices], "rv", markersize=8, label="Peaks")
     ax.set_ylabel("Contraction amplitude (a.u.)")
     ax.set_title(f"Contraction with detected peaks - {sample_label}")
     ax.legend(loc="upper right")
@@ -958,7 +1054,7 @@ def analyse_sample_timeseries(
 
     time_ms, signal = load_tsv(contraction_file)
 
-    peak_indices, peak_times = detect_peaks(time_ms, signal)
+    peak_indices, peak_times, sawtooth_peak = detect_peaks(time_ms, signal)
     if len(peak_times) < 5:
         if verbose:
             tqdm.write(f"  [WARN] Fewer than 5 peaks detected in {folder_name}")
@@ -999,6 +1095,7 @@ def analyse_sample_timeseries(
         "contraction_values": signal.tolist(),
         "peak_indices": peak_indices.tolist(),
         "peak_times_ms": peak_times.tolist(),
+        "sawtooth_peak": sawtooth_peak.tolist(),
         "ibi_time_ms": ibi_time_ms.tolist(),
         "ibi_values_ms": ibi_ms.tolist(),
         "instantaneous_hr_bpm": instantaneous_hr.tolist(),
@@ -1039,7 +1136,7 @@ def analyse_sample(
             contraction_file = os.path.join(folder_path, "contraction.txt")
             if meta is not None and os.path.isfile(contraction_file):
                 time_ms, signal = load_tsv(contraction_file)
-                peak_indices, peak_times = detect_peaks(time_ms, signal)
+                peak_indices, peak_times, sawtooth_peak = detect_peaks(time_ms, signal)
                 ibi_ms = compute_ibi(peak_times) if len(peak_times) >= 2 else np.array([], dtype=float)
                 sample_label = f"{meta['exposure']}_{meta['concentration']}_{meta['well']}.{meta['fish']}"
                 os.makedirs(output_dir, exist_ok=True)
@@ -1049,6 +1146,7 @@ def analyse_sample(
                     np.asarray(signal, dtype=float),
                     np.asarray(peak_indices, dtype=int),
                     np.asarray(peak_times, dtype=float),
+                    np.asarray(sawtooth_peak, dtype=bool),
                     np.asarray(ibi_ms, dtype=float),
                     sample_label,
                     plot_path,
@@ -1063,6 +1161,7 @@ def analyse_sample(
             np.asarray(sample_data["contraction_values"], dtype=float),
             np.asarray(sample_data["peak_indices"], dtype=int),
             np.asarray(sample_data["peak_times_ms"], dtype=float),
+            np.asarray(sample_data.get("sawtooth_peak", []), dtype=bool),
             np.asarray(sample_data["ibi_values_ms"], dtype=float),
             sample_data["sample"],
             plot_path,
