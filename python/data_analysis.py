@@ -991,13 +991,22 @@ def plot_contraction_with_peaks(time_ms, signal, peak_indices, peak_times,
     ax.plot(time_ms / 1000, signal, linewidth=0.7, label="Contraction")
 
     # Separate normal peaks and sawtooth peaks for plotting
-    if sawtooth_peak is not None and len(sawtooth_peak) == len(peak_indices):
-        normal_mask = ~sawtooth_peak
-        sawtooth_mask = sawtooth_peak
+    if sawtooth_peak is not None:
+        # Robustly coerce to a 1D boolean NumPy array for elementwise operations
+        sawtooth_arr = np.asarray(sawtooth_peak, dtype=bool)
+        if sawtooth_arr.ndim != 1:
+            sawtooth_arr = sawtooth_arr.ravel()
 
-        ax.plot(peak_times[normal_mask] / 1000, signal[peak_indices[normal_mask]], "rv", markersize=8, label="Peaks")
-        if np.any(sawtooth_mask):
-            ax.plot(peak_times[sawtooth_mask] / 1000, signal[peak_indices[sawtooth_mask]], "bv", markersize=8, label="Sawtooth Peaks")
+        if sawtooth_arr.size == len(peak_indices):
+            normal_mask = ~sawtooth_arr
+            sawtooth_mask = sawtooth_arr
+
+            ax.plot(peak_times[normal_mask] / 1000, signal[peak_indices[normal_mask]], "rv", markersize=8, label="Peaks")
+            if np.any(sawtooth_mask):
+                ax.plot(peak_times[sawtooth_mask] / 1000, signal[peak_indices[sawtooth_mask]], "bv", markersize=8, label="Sawtooth Peaks")
+        else:
+            # Fallback: length mismatch, plot all peaks as normal
+            ax.plot(peak_times / 1000, signal[peak_indices], "rv", markersize=8, label="Peaks")
     else:
         ax.plot(peak_times / 1000, signal[peak_indices], "rv", markersize=8, label="Peaks")
     ax.set_ylabel("Contraction amplitude (a.u.)")
