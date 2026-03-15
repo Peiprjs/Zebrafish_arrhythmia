@@ -20,6 +20,8 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 
+peak_thresh = 5
+arr_threshold = 0.3
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -240,8 +242,8 @@ def analyse_sample(folder_path, output_dir=None):
 
     # Detect peaks
     peak_indices, peak_times = detect_peaks(time_ms, signal)
-    if len(peak_times) < 2:
-        print(f"  [WARN] Fewer than 2 peaks detected in {folder_name}")
+    if len(peak_times) < peak_thresh:
+        print(f"  [WARN] Fewer than {peak_thresh} peaks detected in {folder_name}")
         return None
 
     # Inter-beat intervals
@@ -270,7 +272,7 @@ def analyse_sample(folder_path, output_dir=None):
         "ibi_values_ms": ibi_ms.tolist(),
         **hrv,
         "arrhythmia_probability": arr_prob,
-        "Arrhymia": arr_prob > 0.5,
+        "Arrhymia": arr_prob > arr_threshold,
     }
 
 
