@@ -29,6 +29,52 @@ MODEL_OUTPUT_FILES = {
     "unsupervised_pca_variance": "unsupervised_pca_variance.csv",
     "unsupervised_pca_loadings": "unsupervised_pca_loadings.csv",
 }
+VARIABLE_GLOSSARY_MARKDOWN = """
+- `sample`: sample identifier (`Exposure_Concentration_Well.Fish`).
+- `exposure`: treatment family/group (e.g., `Phe`, `Terf`).
+- `concentration`: dose level.
+- `well`, `fish`: plate well index and fish index.
+- `n_peaks`: number of detected contraction peaks.
+- `IBI`: inter-beat interval (time between consecutive peaks, ms).
+- `mean_ibi_ms`: mean IBI.
+- `HRV`: heart-rate variability.
+- `sdnn_ms` (SDNN): standard deviation of IBI.
+- `rmssd_ms` (RMSSD): root mean square of successive IBI differences.
+- `cv_ibi` (CV): coefficient of variation of IBI (`SDNN / mean IBI`).
+- `pnn50` (pNN50): percent of successive IBI differences > 50 ms.
+- `mean_hr_bpm`: mean heart rate in beats per minute.
+- `arrhythmia_risk_score`: heuristic irregularity score (0 to 1; higher = more irregular).
+- `arrhythmia_probability`: compatibility alias of `arrhythmia_risk_score`.
+- `arrhythmia_score_cv`, `arrhythmia_score_rmssd`, `arrhythmia_score_outlier`: component scores used to build the risk score.
+- `arrhythmia_outlier_fraction`: fraction of IBIs treated as outliers.
+- `arrhythmia_data_sufficient`: whether enough IBI data were available for scoring.
+- `arrhythmia_quality_flag`: scoring quality flag (`ok`, `low_ibi_count`, `insufficient_ibi`).
+- `arrhythmia_ibi_count`: number of IBIs used.
+- `arrhythmia_threshold`: cutoff used for binary decision.
+- `Arrhymia`: boolean decision from risk score and threshold.
+- `paired_ttest_pvalue_vs_control0_mean_ibi`: paired t-test p-value vs concentration-0 control mean IBI profile (same exposure).
+- `cluster_*`: unsupervised cluster labels from KMeans/hierarchical clustering.
+- `pca_pc1`, `pca_pc2`: first two PCA component scores.
+"""
+TEXT_WRAP_CSS = """
+<style>
+.stMarkdown p, .stMarkdown li, .stCaption, .stText {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+section[data-testid="stSidebar"] .stMarkdown p,
+section[data-testid="stSidebar"] .stMarkdown li,
+section[data-testid="stSidebar"] .stCaption,
+section[data-testid="stSidebar"] .stText {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+section[data-testid="stSidebar"] code {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+</style>
+"""
 
 
 def _safe_float_sort_key(value):
@@ -259,8 +305,14 @@ def _plot_group_aggregate(grid_pct, aggregate, title, y_label):
     plt.close(fig)
 
 
+def _apply_text_wrap_css():
+    """Inject CSS to keep long sidebar/content text from overflowing."""
+    st.markdown(TEXT_WRAP_CSS, unsafe_allow_html=True)
+
+
 def main():
     st.set_page_config(page_title="Zebrafish HRV Dashboard", layout="wide")
+    _apply_text_wrap_css()
     st.title("Zebrafish contraction and HRV dashboard")
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -275,6 +327,8 @@ def main():
         if st.button("Reload data"):
             st.cache_data.clear()
     st.sidebar.markdown("DOI: [10.5281/zenodo.19038805](https://doi.org/10.5281/zenodo.19038805)")
+    with st.sidebar.expander("Variables & abbreviations", expanded=False):
+        st.markdown(VARIABLE_GLOSSARY_MARKDOWN)
 
     results_dir = os.path.abspath(results_dir)
     output_dir = os.path.abspath(output_dir)
