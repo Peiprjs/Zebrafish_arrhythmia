@@ -311,18 +311,20 @@ def main():
     selected_sample = st.sidebar.selectbox("Fish sample", sample_options)
 
     filtered_records = [record_by_sample[sample] for sample in sample_options if sample in record_by_sample]
+    model_tables = _load_model_output_tables(output_dir)
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Fish samples", len(filtered_df))
     c2.metric("Exposure groups", int(filtered_df["exposure"].nunique()))
     c3.metric("Dose groups", int(filtered_df["concentration"].nunique()))
 
-    tab_fish, tab_dose, tab_hrv, tab_metrics, tab_models = st.tabs([
+    tab_fish, tab_dose, tab_hrv, tab_metrics, tab_models, tab_conclusions = st.tabs([
         "Fish profile",
         "Dose profile",
         "HRV over time",
         "All variables",
         "Model summaries",
+        "Conclusions",
     ])
 
     with tab_fish:
@@ -459,7 +461,7 @@ def main():
 
     with tab_models:
         st.caption(f"Model outputs loaded from `{output_dir}`")
-        tables = _load_model_output_tables(output_dir)
+        tables = model_tables
 
         st.subheader("Regression summary")
         linear_summary = tables["linear_regression_summary"]
@@ -507,6 +509,72 @@ def main():
                     tables["unsupervised_assignments"].head(20),
                     use_container_width=True,
                 )
+
+    with tab_conclusions:
+        st.subheader("Conclusions for current filter selection")
+        risk_series = filtered_df["arrhythmia_risk_score"].dropna()
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Samples in view", int(len(filtered_df)))
+        k2.metric(
+            "Arrhymia rate",
+            f"{100.0 * float(filtered_df['Arrhymia'].astype(float).mean()):.1f}%",
+        )
+        k3.metric(
+            "Mean risk score",
+            f"{float(risk_series.mean()):.3f}" if len(risk_series) > 0 else "n/a",
+        )
+
+        top_cols = [
+            col for col in [
+                "sample",
+                "exposure",
+                "concentration",
+                "arrhythmia_risk_score",
+                "Arrhymia",
+                "paired_ttest_pvalue_vs_control0_mean_ibi",
+            ]
+            if col in filtered_df.columns
+        ]
+        if top_cols:
+            st.markdown("**Top 5 highest-risk samples**")
+            top_risk = filtered_df.sort_values(
+                "arrhythmia_risk_score",
+                ascending=False,
+                na_position="last",
+            ).head(5)
+            st.dataframe(top_risk[top_cols], use_container_width=True)
+
+        trend_summary = model_tables["linear_trend_summary"]
+        if trend_summary is not None and not trend_summary.empty:
+            slope = float(trend_summary.iloc[0]["slope"])
+            p_value = float(trend_summary.iloc[0]["p_value"])
+            direction = "increases" if slope > 0 else "decreases"
+            st.markdown(
+                f"- Concentration trend: risk score **{direction}** with concentration "
+                f"(slope={slope:.4f}, p={p_value:.4g})."
+            )
+
+        logistic_summary = model_tables["logistic_regression_summary"]
+        if logistic_summary is not None and not logistic_summary.empty:
+            acc = float(logistic_summary.iloc[0]["accuracy_at_0_5"])
+            pseudo_r2 = float(logistic_summary.iloc[0]["mcfadden_pseudo_r2"])
+            st.markdown(
+                f"- Logistic model summary: accuracy={acc:.3f}, McFadden R²={pseudo_r2:.3f}."
+            )
+
+        cluster_summary = model_tables["unsupervised_cluster_summary"]
+        if cluster_summary is not None and not cluster_summary.empty:
+            highest_cluster = cluster_summary.sort_values(
+                "arrhythmia_rate",
+                ascending=False,
+            ).iloc[0]
+            st.markdown(
+                f"- Highest-risk discovered cluster: `{highest_cluster['model']}` "
+                f"cluster {int(highest_cluster['cluster_id'])} with "
+                f"arrhythmia_rate={float(highest_cluster['arrhythmia_rate']):.3f} "
+                f"(n={int(highest_cluster['n_samples'])})."
+            )
 
 
 if __name__ == "__main__":
