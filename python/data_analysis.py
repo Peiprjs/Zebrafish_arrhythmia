@@ -8,6 +8,9 @@ and estimates an arrhythmia probability for each sample.
 
 Usage:
     python data_analysis.py [--results_dir PATH] [--output_dir PATH]
+
+GUI:
+    streamlit run gui_app.py
 """
 
 import argparse
@@ -20,8 +23,14 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 
-peak_thresh = 5
-arr_threshold = 0.3
+
+SUMMARY_COLUMNS = [
+    "sample", "exposure", "concentration", "well", "fish",
+    "n_peaks", "mean_ibi_ms", "sdnn_ms", "rmssd_ms",
+    "cv_ibi", "pnn50", "mean_hr_bpm", "arrhythmia_probability", "Arrhymia",
+]
+ROLLING_RMSSD_WINDOW = 5
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -57,6 +66,17 @@ def load_tsv(filepath):
     return data[:, 0], data[:, 1]
 
 
+def list_result_folders(results_dir):
+    """List MUSCLEMOTION result folders in sorted order."""
+    if not os.path.isdir(results_dir):
+        return []
+
+    return sorted(
+        d for d in os.listdir(results_dir)
+        if os.path.isdir(os.path.join(results_dir, d)) and d.endswith("-Contr-Results")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Peak detection
 # ---------------------------------------------------------------------------
@@ -86,7 +106,7 @@ def detect_peaks(time_ms, signal, prominence_factor=0.3, distance_ms=200.0):
     distance_samples = max(1, int(distance_ms / dt))
     prominence = prominence_factor * (np.max(signal) - np.min(signal))
 
-    peak_indices, properties = find_peaks(
+    peak_indices, _ = find_peaks(
         signal, prominence=prominence, distance=distance_samples
     )
     return peak_indices, time_ms[peak_indices]
@@ -146,6 +166,24 @@ def compute_hrv_metrics(ibi_ms):
     }
 
 
+def compute_rolling_rmssd(ibi_ms, window=ROLLING_RMSSD_WINDOW):
+    """Compute rolling RMSSD values over IBI windows."""
+    if window < 2:
+        raise ValueError("window must be >= 2")
+
+    ibi = np.asarray(ibi_ms, dtype=float)
+    if len(ibi) < window:
+        return np.array([], dtype=float)
+
+    rolling = np.empty(len(ibi) - window + 1, dtype=float)
+    for i in range(window - 1, len(ibi)):
+        segment = ibi[i - window + 1: i + 1]
+        diffs = np.diff(segment)
+        rolling[i - window + 1] = np.sqrt(np.mean(diffs ** 2)) if len(diffs) > 0 else 0.0
+
+    return rolling
+
+
 # ---------------------------------------------------------------------------
 # Arrhythmia probability
 # ---------------------------------------------------------------------------
@@ -182,7 +220,9 @@ def arrhythmia_probability(ibi_ms):
 
     # Indicator 3: fraction of outlier IBIs (>30 % from median)
     median_ibi = np.median(ibi)
-    outlier_frac = np.mean(np.abs(ibi - median_ibi) / (median_ibi if median_ibi > 0 else 1.0) > 0.30)
+    outlier_frac = np.mean(
+        np.abs(ibi - median_ibi) / (median_ibi if median_ibi > 0 else 1.0) > 0.30
+    )
     score_outlier = _logistic(outlier_frac, 0.15, 20)
 
     return float(np.mean([score_cv, score_rmssd, score_outlier]))
@@ -222,10 +262,10 @@ def plot_contraction_with_peaks(time_ms, signal, peak_indices, peak_times,
 # Main analysis pipeline
 # ---------------------------------------------------------------------------
 
-def analyse_sample(folder_path, output_dir=None):
-    """Run the full HRV analysis on a single MUSCLEMOTION results folder.
+def analyse_sample_timeseries(folder_path, verbose=True):
+    """Analyse a sample folder and return summary + time-series fields.
 
-    Returns a dict of results or None if the folder is not valid.
+    Returns a dict or None if folder is invalid.
     """
     folder_name = os.path.basename(folder_path)
     meta = parse_folder_name(folder_name)
@@ -234,46 +274,108 @@ def analyse_sample(folder_path, output_dir=None):
 
     contraction_file = os.path.join(folder_path, "contraction.txt")
     if not os.path.isfile(contraction_file):
-        print(f"  [SKIP] No contraction.txt in {folder_name}")
+        if verbose:
+            print(f"  [SKIP] No contraction.txt in {folder_name}")
         return None
 
-    # Load contraction data
     time_ms, signal = load_tsv(contraction_file)
 
-    # Detect peaks
     peak_indices, peak_times = detect_peaks(time_ms, signal)
-    if len(peak_times) < peak_thresh:
-        print(f"  [WARN] Fewer than {peak_thresh} peaks detected in {folder_name}")
+    if len(peak_times) < 2:
+        if verbose:
+            print(f"  [WARN] Fewer than 2 peaks detected in {folder_name}")
         return None
 
-    # Inter-beat intervals
     ibi_ms = compute_ibi(peak_times)
+    ibi_time_ms = peak_times[1:]
 
-    # HRV metrics
     hrv = compute_hrv_metrics(ibi_ms)
-
-    # Arrhythmia probability
     arr_prob = arrhythmia_probability(ibi_ms)
-
     sample_label = f"{meta['exposure']}_{meta['concentration']}_{meta['well']}.{meta['fish']}"
 
-    # Optional plot
-    if output_dir is not None:
-        os.makedirs(output_dir, exist_ok=True)
-        plot_path = os.path.join(output_dir, f"{sample_label}_hrv.png")
-        plot_contraction_with_peaks(
-            time_ms, signal, peak_indices, peak_times, ibi_ms, sample_label, plot_path
-        )
+    instantaneous_hr = np.where(ibi_ms > 0, 60000.0 / ibi_ms, np.nan)
+    rolling_rmssd = compute_rolling_rmssd(ibi_ms, window=ROLLING_RMSSD_WINDOW)
+    if len(rolling_rmssd) > 0:
+        rolling_rmssd_time_ms = ibi_time_ms[ROLLING_RMSSD_WINDOW - 1:]
+    else:
+        rolling_rmssd_time_ms = np.array([], dtype=float)
+
+    speed_file = os.path.join(folder_path, "speed-of-contraction.txt")
+    if os.path.isfile(speed_file):
+        speed_time_ms, speed_values = load_tsv(speed_file)
+    else:
+        speed_time_ms = np.array([], dtype=float)
+        speed_values = np.array([], dtype=float)
 
     return {
         "sample": sample_label,
         **meta,
         "n_peaks": len(peak_times),
+        "time_ms": time_ms.tolist(),
+        "contraction_values": signal.tolist(),
+        "peak_indices": peak_indices.tolist(),
+        "peak_times_ms": peak_times.tolist(),
+        "ibi_time_ms": ibi_time_ms.tolist(),
         "ibi_values_ms": ibi_ms.tolist(),
+        "instantaneous_hr_bpm": instantaneous_hr.tolist(),
+        "rolling_rmssd_time_ms": rolling_rmssd_time_ms.tolist(),
+        "rolling_rmssd_ms": rolling_rmssd.tolist(),
+        "speed_time_ms": speed_time_ms.tolist(),
+        "speed_values": speed_values.tolist(),
+        "has_speed_profile": bool(len(speed_time_ms) > 0),
         **hrv,
         "arrhythmia_probability": arr_prob,
-        "Arrhymia": arr_prob > arr_threshold,
+        "Arrhymia": arr_prob > 0.5,
     }
+
+
+def analyse_sample(folder_path, output_dir=None):
+    """Run full HRV analysis on one MUSCLEMOTION results folder.
+
+    Returns a summary dict or None if folder is not valid.
+    """
+    sample_data = analyse_sample_timeseries(folder_path, verbose=True)
+    if sample_data is None:
+        return None
+
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        plot_path = os.path.join(output_dir, f"{sample_data['sample']}_hrv.png")
+        plot_contraction_with_peaks(
+            np.asarray(sample_data["time_ms"], dtype=float),
+            np.asarray(sample_data["contraction_values"], dtype=float),
+            np.asarray(sample_data["peak_indices"], dtype=int),
+            np.asarray(sample_data["peak_times_ms"], dtype=float),
+            np.asarray(sample_data["ibi_values_ms"], dtype=float),
+            sample_data["sample"],
+            plot_path,
+        )
+
+    summary = {key: sample_data[key] for key in SUMMARY_COLUMNS}
+    summary["ibi_values_ms"] = sample_data["ibi_values_ms"]
+    return summary
+
+
+def load_all_sample_timeseries(results_dir, verbose=False):
+    """Load detailed per-sample series for all valid MUSCLEMOTION folders."""
+    if not os.path.isdir(results_dir):
+        raise FileNotFoundError(f"results directory not found: {results_dir}")
+
+    folders = list_result_folders(results_dir)
+    if not folders:
+        raise ValueError(f"No MUSCLEMOTION result folders found in {results_dir}")
+
+    all_results = []
+    for folder_name in folders:
+        folder_path = os.path.join(results_dir, folder_name)
+        result = analyse_sample_timeseries(folder_path, verbose=verbose)
+        if result is not None:
+            all_results.append(result)
+
+    if not all_results:
+        raise ValueError("No valid results produced.")
+
+    return all_results
 
 
 def run_analysis(results_dir, output_dir):
@@ -282,11 +384,7 @@ def run_analysis(results_dir, output_dir):
         print(f"Error: results directory not found: {results_dir}")
         sys.exit(1)
 
-    folders = sorted(
-        d for d in os.listdir(results_dir)
-        if os.path.isdir(os.path.join(results_dir, d)) and d.endswith("-Contr-Results")
-    )
-
+    folders = list_result_folders(results_dir)
     if not folders:
         print(f"No MUSCLEMOTION result folders found in {results_dir}")
         sys.exit(1)
@@ -306,12 +404,7 @@ def run_analysis(results_dir, output_dir):
         sys.exit(1)
 
     # Build summary DataFrame (exclude per-beat IBI lists for the CSV)
-    summary_cols = [
-        "sample", "exposure", "concentration", "well", "fish",
-        "n_peaks", "mean_ibi_ms", "sdnn_ms", "rmssd_ms",
-        "cv_ibi", "pnn50", "mean_hr_bpm", "arrhythmia_probability", "Arrhymia",
-    ]
-    df = pd.DataFrame(all_results)[summary_cols]
+    df = pd.DataFrame(all_results)[SUMMARY_COLUMNS]
     csv_path = os.path.join(output_dir, "hrv_summary.csv")
     df.to_csv(csv_path, index=False)
     print(f"\nSummary saved to {csv_path}")
