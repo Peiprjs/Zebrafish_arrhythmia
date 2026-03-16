@@ -27,7 +27,7 @@ from scipy.cluster.hierarchy import fcluster, linkage
 from scipy.cluster.vq import kmeans2
 from scipy.optimize import minimize
 from scipy.signal import find_peaks
-from scipy.stats import linregress, norm, t as student_t, ttest_rel
+from scipy.stats import f_oneway, linregress, norm, t as student_t, ttest_rel
 
 
 SUMMARY_COLUMNS = [
@@ -40,6 +40,10 @@ SUMMARY_COLUMNS = [
     "arrhythmia_data_sufficient", "arrhythmia_quality_flag",
     "arrhythmia_ibi_count", "arrhythmia_threshold",
     "paired_ttest_pvalue_vs_control0_mean_ibi",
+    "paired_ttest_pvalue_terf_vs_phe_mean_ibi",
+    "uncoupled_peak_count", "uncoupled_peak_fraction",
+    "contraction_amplitude_mean", "contraction_amplitude_std",
+    "force_of_contraction_mean_au", "force_of_contraction_std_au", "force_of_contraction_peak_au",
     "Arrhymia",
     "snr", "baseline_drift",
 ]
@@ -366,6 +370,57 @@ def compute_ibi(peak_times_ms):
     return np.diff(peak_times_ms)
 
 
+def compute_contraction_amplitudes(signal, peak_indices):
+    """Compute beat-by-beat contraction amplitudes from peak-trough differences."""
+    signal = np.asarray(signal, dtype=float)
+    peak_indices = np.asarray(peak_indices, dtype=int)
+    if len(signal) < 3 or len(peak_indices) == 0:
+        return np.array([], dtype=float)
+
+    amplitudes = []
+    prev_idx = 0
+    for peak_idx in peak_indices:
+        if peak_idx <= prev_idx or peak_idx >= len(signal):
+            prev_idx = max(prev_idx, min(peak_idx, len(signal) - 1))
+            continue
+        window = signal[prev_idx: peak_idx + 1]
+        if len(window) == 0:
+            prev_idx = peak_idx
+            continue
+        trough = float(np.min(window))
+        amp = float(signal[peak_idx] - trough)
+        if np.isfinite(amp):
+            amplitudes.append(max(0.0, amp))
+        prev_idx = peak_idx
+
+    return np.asarray(amplitudes, dtype=float)
+
+
+def compute_force_of_contraction(speed_values):
+    """Estimate force proxy from speed-of-contraction profile in arbitrary units."""
+    speed = np.asarray(speed_values, dtype=float)
+    finite_speed = speed[np.isfinite(speed)]
+    if len(finite_speed) == 0:
+        return {
+            "force_of_contraction_mean_au": np.nan,
+            "force_of_contraction_std_au": np.nan,
+            "force_of_contraction_peak_au": np.nan,
+        }
+
+    positive_speed = np.clip(finite_speed, 0.0, None)
+    if len(positive_speed) == 0:
+        return {
+            "force_of_contraction_mean_au": np.nan,
+            "force_of_contraction_std_au": np.nan,
+            "force_of_contraction_peak_au": np.nan,
+        }
+    return {
+        "force_of_contraction_mean_au": float(np.mean(positive_speed)),
+        "force_of_contraction_std_au": float(np.std(positive_speed, ddof=1)) if len(positive_speed) > 1 else 0.0,
+        "force_of_contraction_peak_au": float(np.max(positive_speed)),
+    }
+
+
 def compute_hrv_metrics(ibi_ms):
     """Compute heart-rate variability metrics from inter-beat intervals.
 
@@ -603,6 +658,32 @@ def add_control_pvalues(full_df):
     return df
 
 
+def add_terf_vs_phe_pvalue(full_df):
+    """Add global paired t-test p-value comparing Terf vs Phe mean IBI."""
+    df = full_df.copy()
+    exposures = df["exposure"].astype(str)
+    terf = df[exposures.str.lower() == "terf"].copy()
+    phe = df[exposures.str.lower() == "phe"].copy()
+    if terf.empty or phe.empty:
+        df["paired_ttest_pvalue_terf_vs_phe_mean_ibi"] = np.nan
+        return df
+
+    pair_cols = ["concentration", "well", "fish"]
+    terf = terf[pair_cols + ["mean_ibi_ms"]].rename(columns={"mean_ibi_ms": "terf_mean_ibi_ms"})
+    phe = phe[pair_cols + ["mean_ibi_ms"]].rename(columns={"mean_ibi_ms": "phe_mean_ibi_ms"})
+    merged = pd.merge(terf, phe, on=pair_cols, how="inner")
+    if len(merged) < 2:
+        p_value = np.nan
+    else:
+        p_value = paired_ttest_pvalue(
+            merged["terf_mean_ibi_ms"].to_numpy(dtype=float),
+            merged["phe_mean_ibi_ms"].to_numpy(dtype=float),
+            paired=True,
+        )
+    df["paired_ttest_pvalue_terf_vs_phe_mean_ibi"] = p_value
+    return df
+
+
 # ---------------------------------------------------------------------------
 # Additional statistical tests
 # ---------------------------------------------------------------------------
@@ -828,6 +909,59 @@ def run_additional_statistical_tests(summary_df, output_dir):
         "logistic_regression_summary": logistic_summary_path,
         "linear_trend_summary": trend_path,
     }
+
+
+def run_concentration_anova(summary_df, output_dir):
+    """Run one-way ANOVA between concentrations within each exposure."""
+    rows = []
+    if summary_df.empty:
+        return {}
+
+    metrics = [
+        metric
+        for metric in ["arrhythmia_risk_score", "mean_ibi_ms", "contraction_amplitude_mean"]
+        if metric in summary_df.columns
+    ]
+    for exposure, exposure_df in summary_df.groupby("exposure"):
+        exposure_df = exposure_df.copy()
+        exposure_df["concentration_str"] = exposure_df["concentration"].astype(str)
+        for metric in metrics:
+            groups = []
+            for _, group_df in exposure_df.groupby("concentration_str"):
+                values = pd.to_numeric(group_df[metric], errors="coerce").to_numpy(dtype=float)
+                values = values[np.isfinite(values)]
+                if len(values) > 0:
+                    groups.append(values)
+            if len(groups) < 2:
+                rows.append(
+                    {
+                        "exposure": exposure,
+                        "metric": metric,
+                        "n_groups": len(groups),
+                        "f_statistic": np.nan,
+                        "p_value": np.nan,
+                    }
+                )
+                continue
+
+            try:
+                f_stat, p_value = f_oneway(*groups)
+            except Exception:
+                f_stat, p_value = np.nan, np.nan
+            rows.append(
+                {
+                    "exposure": exposure,
+                    "metric": metric,
+                    "n_groups": len(groups),
+                    "f_statistic": float(f_stat) if np.isfinite(f_stat) else np.nan,
+                    "p_value": float(p_value) if np.isfinite(p_value) else np.nan,
+                }
+            )
+
+    anova_df = pd.DataFrame(rows)
+    anova_path = os.path.join(output_dir, "anova_concentration_summary.csv")
+    anova_df.to_csv(anova_path, index=False)
+    return {"anova_concentration_summary": anova_path}
 
 
 # ---------------------------------------------------------------------------
@@ -1092,6 +1226,21 @@ def analyse_sample_timeseries(
         speed_time_ms = np.array([], dtype=float)
         speed_values = np.array([], dtype=float)
 
+    amplitudes = compute_contraction_amplitudes(signal, peak_indices)
+    if len(amplitudes) > 0:
+        amplitude_mean = float(np.mean(amplitudes))
+        amplitude_std = float(np.std(amplitudes, ddof=1)) if len(amplitudes) > 1 else 0.0
+    else:
+        amplitude_mean = np.nan
+        amplitude_std = np.nan
+    force_metrics = compute_force_of_contraction(speed_values)
+    uncoupled_count = int(np.sum(np.asarray(sawtooth_peak, dtype=bool)))
+    uncoupled_fraction = (
+        float(uncoupled_count / len(peak_times))
+        if len(peak_times) > 0
+        else np.nan
+    )
+
     return {
         "sample": sample_label,
         **meta,
@@ -1109,10 +1258,17 @@ def analyse_sample_timeseries(
         "speed_time_ms": speed_time_ms.tolist(),
         "speed_values": speed_values.tolist(),
         "has_speed_profile": bool(len(speed_time_ms) > 0),
+        "contraction_amplitude_values": amplitudes.tolist(),
         **hrv,
         **arrhythmia,
         "arrhythmia_threshold": float(arrhythmia_threshold),
         "paired_ttest_pvalue_vs_control0_mean_ibi": np.nan,
+        "paired_ttest_pvalue_terf_vs_phe_mean_ibi": np.nan,
+        "uncoupled_peak_count": uncoupled_count,
+        "uncoupled_peak_fraction": uncoupled_fraction,
+        "contraction_amplitude_mean": amplitude_mean,
+        "contraction_amplitude_std": amplitude_std,
+        **force_metrics,
         "Arrhymia": arr_decision,
         **quality,
     }
@@ -1253,13 +1409,17 @@ def run_analysis(
     # Build summary DataFrame (exclude per-beat IBI lists for the CSV)
     full_df = pd.DataFrame(all_results)
     full_df = add_control_pvalues(full_df)
+    full_df = add_terf_vs_phe_pvalue(full_df)
     df = full_df[SUMMARY_COLUMNS]
     csv_path = os.path.join(output_dir, "hrv_summary.csv")
     df.to_csv(csv_path, index=False)
     stats_paths = run_additional_statistical_tests(df, output_dir)
+    anova_paths = run_concentration_anova(df, output_dir)
     unsupervised_paths = run_unsupervised_models(df, output_dir)
     print(f"\nSummary saved to {csv_path}")
     for label, path in stats_paths.items():
+        print(f"{label} saved to {path}")
+    for label, path in anova_paths.items():
         print(f"{label} saved to {path}")
     for label, path in unsupervised_paths.items():
         print(f"{label} saved to {path}")
