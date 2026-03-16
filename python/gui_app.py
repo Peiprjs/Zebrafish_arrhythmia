@@ -14,10 +14,10 @@ import streamlit as st
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
+from functions import paired_ttest_pvalue
 from data_analysis import (
     SUMMARY_COLUMNS,
     load_all_sample_timeseries,
-    paired_ttest_pvalue,
 )
 
 
@@ -28,6 +28,7 @@ MODEL_OUTPUT_FILES = {
     "logistic_regression_summary": "logistic_regression_summary.csv",
     "logistic_regression_coefficients": "logistic_regression_coefficients.csv",
     "linear_trend_summary": "linear_trend_summary.csv",
+    "anova_concentration_summary": "anova_concentration_summary.csv",
     "unsupervised_cluster_summary": "unsupervised_cluster_summary.csv",
     "unsupervised_assignments": "unsupervised_assignments.csv",
     "unsupervised_pca_variance": "unsupervised_pca_variance.csv",
@@ -562,6 +563,13 @@ def _render_tab_models(output_dir, model_tables):
             st.markdown("**Logistic regression coefficients**")
             st.dataframe(tables["logistic_regression_coefficients"], use_container_width=True)
 
+    st.subheader("ANOVA concentration summary")
+    anova_summary = tables["anova_concentration_summary"]
+    if anova_summary is None:
+        st.info("No ANOVA output files found. Run `python data_analysis.py` to generate them.")
+    else:
+        st.dataframe(anova_summary, use_container_width=True)
+
     st.subheader("Unsupervised learning summary")
     cluster_summary = tables["unsupervised_cluster_summary"]
     pca_variance = tables["unsupervised_pca_variance"]
@@ -636,6 +644,17 @@ def _render_tab_conclusions(filtered_df, model_tables):
         st.markdown(
             f"- Logistic model summary: accuracy={acc:.3f}, McFadden R²={pseudo_r2:.3f}."
         )
+
+    anova_summary = model_tables.get("anova_concentration_summary")
+    if anova_summary is not None and not anova_summary.empty:
+        significant_anova = anova_summary[anova_summary["p_value"] < 0.05]
+        if not significant_anova.empty:
+            for _, row in significant_anova.iterrows():
+                st.markdown(
+                    f"- ANOVA significant finding for exposure **{row['exposure']}**: "
+                    f"Concentration affects **{row['metric']}** "
+                    f"(p={row['p_value']:.4g})."
+                )
 
     cluster_summary = model_tables["unsupervised_cluster_summary"]
     if cluster_summary is not None and not cluster_summary.empty:
