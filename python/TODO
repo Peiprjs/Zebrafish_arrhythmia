@@ -1,27 +1,27 @@
 TODO execution plan (step by step):
 
 Step 1 - Peak handling
-- [ ] Identify uncoupled peaks that resemble an EKG in contraction traces
+- [x] Identify uncoupled peaks that resemble an EKG in contraction traces
   - Example of these peaks are Terf 30 cases.
 
 Step 2 - Arrhythmia interpretation
-- [ ] Explain in detail how arrhythmia score works
+- [x] Explain in detail how arrhythmia score works
 
 Step 3 - Medication/control comparison
-- [ ] Add statistical test to compare between medications (paired samples t-test)
+- [x] Add statistical test to compare between medications (paired samples t-test)
   - This should compare the overall effect of Terf vs Phe
 
 Step 4 - Concentration-level inferential statistics
-- [ ] Add ANOVA between concentrations
-  - Next action: add concentration-group ANOVA summary export in `data_analysis.py`.
+- [x] Add ANOVA between concentrations
+  - Exported as `output/anova_concentration_summary.csv`.
 
 Step 5 - Signal magnitude metrics
-- [ ] Contraction amplitude
+- [x] Contraction amplitude
   - This should look at the beat-per-beat amplitude size, and overall per fish the average size and variation/standard deviation
 
 Step 8 - Biomechanics extension
-- [ ] Calculate force of contraction using the speed of contraction.
+- [x] Calculate force of contraction using the speed of contraction.
   - This can be in arbitrary units
 
 Step 9 - Citation hygiene
-- [ ] Make bibtex file based on citation list
+- [x] Make bibtex file based on citation list
