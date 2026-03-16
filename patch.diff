@@ -1,0 +1,26 @@
+<<<<<<< SEARCH
+MODEL_OUTPUT_FILES = {
+    "linear_regression_summary": "linear_regression_summary.csv",
+    "linear_regression_coefficients": "linear_regression_coefficients.csv",
+    "logistic_regression_summary": "logistic_regression_summary.csv",
+    "logistic_regression_coefficients": "logistic_regression_coefficients.csv",
+    "linear_trend_summary": "linear_trend_summary.csv",
+    "unsupervised_cluster_summary": "unsupervised_cluster_summary.csv",
+    "unsupervised_assignments": "unsupervised_assignments.csv",
+    "unsupervised_pca_variance": "unsupervised_pca_variance.csv",
+    "unsupervised_pca_loadings": "unsupervised_pca_loadings.csv",
+}
+=======
+MODEL_OUTPUT_FILES = {
+    "linear_regression_summary": "linear_regression_summary.csv",
+    "linear_regression_coefficients": "linear_regression_coefficients.csv",
+    "logistic_regression_summary": "logistic_regression_summary.csv",
+    "logistic_regression_coefficients": "logistic_regression_coefficients.csv",
+    "linear_trend_summary": "linear_trend_summary.csv",
+    "anova_concentration_summary": "anova_concentration_summary.csv",
+    "unsupervised_cluster_summary": "unsupervised_cluster_summary.csv",
+    "unsupervised_assignments": "unsupervised_assignments.csv",
+    "unsupervised_pca_variance": "unsupervised_pca_variance.csv",
+    "unsupervised_pca_loadings": "unsupervised_pca_loadings.csv",
+}
+>>>>>>> REPLACE
