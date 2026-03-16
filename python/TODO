@@ -1,13 +1,22 @@
-TODO: 
-- Identify the uncoupled peaks
-- Add ANOVA between concentrations
-- Explain how arrhytmia score works
-- Add statistical test to compare between medications (paired samples t-test)
-- Dosed fish statistics (push code from home)
-- Upload videos of the software
-- Contraction amplitude
-- Calculate force of contraction?
-- Make bibtex file based on citation list
+TODO execution plan (step by step):
 
-(someone else)
-- Measure area of heart in systole vs diastole? Probably there's a FIJI plugin for that.
+Step 1 - Peak handling
+- [ ] Check if implementation works
+
+Step 2 - Arrhythmia interpretation
+- [ ] Check if implementation works
+
+Step 3 - Medication/control comparison
+- [ ] Check if implementation works
+
+Step 4 - Concentration-level inferential statistics
+- [ ] Check if implementation works
+
+Step 5 - Signal magnitude metrics
+- [ ] Check if implementation works
+
+Step 6 - Biomechanics extension
+- [ ] Check if implementation works
+
+Step 7 - Citation hygiene
+- [ ] Check BibTex file
