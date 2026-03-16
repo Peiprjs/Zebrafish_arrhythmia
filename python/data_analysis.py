@@ -28,7 +28,13 @@ from scipy.cluster.vq import kmeans2
 from scipy.optimize import minimize
 from scipy.signal import find_peaks
 from scipy.stats import f_oneway, linregress, norm, t as student_t, ttest_rel
-from functions import paired_ttest_pvalue
+from functions import (
+    paired_ttest_pvalue,
+    parse_folder_name,
+    format_sample_label,
+    load_tsv,
+    list_result_folders
+)
 
 
 SUMMARY_COLUMNS = [
@@ -73,50 +79,14 @@ UNSUPERVISED_FEATURE_COLUMNS = [
 # Data loading
 # ---------------------------------------------------------------------------
 
-def parse_folder_name(folder_name):
-    """Extract metadata from a MUSCLEMOTION results folder name.
-
-    Expected pattern: {Exposure}_{Concentration}_{Well}.{Fish}-Contr-Results
-    Example: Phe_50_1.1-Contr-Results -> ('Phe', '50', '1', '1')
-
-    Returns a dict with keys: exposure, concentration, well, fish.
-    """
-    match = re.match(
-        r"^(.+?)_(\d+)_(\d+)\.(\d+)-Contr-Results$", folder_name
-    )
-    if not match:
-        return None
-    return {
-        "exposure": match.group(1),
-        "concentration": match.group(2),
-        "well": match.group(3),
-        "fish": match.group(4),
-    }
 
 
-def format_sample_label(meta):
-    """Build canonical sample label from parsed folder metadata."""
-    return f"{meta['exposure']}_{meta['concentration']}_{meta['well']}.{meta['fish']}"
 
 
-def load_tsv(filepath):
-    """Load a two-column, tab-separated MUSCLEMOTION output file.
-
-    Returns (time_ms, values) as NumPy arrays.
-    """
-    data = np.loadtxt(filepath, delimiter="\t")
-    return data[:, 0], data[:, 1]
 
 
-def list_result_folders(results_dir):
-    """List MUSCLEMOTION result folders in sorted order."""
-    if not os.path.isdir(results_dir):
-        return []
 
-    return sorted(
-        d for d in os.listdir(results_dir)
-        if os.path.isdir(os.path.join(results_dir, d)) and d.endswith("-Contr-Results")
-    )
+
 
 
 # ---------------------------------------------------------------------------
