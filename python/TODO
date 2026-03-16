@@ -1,13 +1,40 @@
-TODO: 
-- Identify the uncoupled peaks
-- Add ANOVA between concentrations
-- Explain how arrhytmia score works
-- Add statistical test to compare between medications (paired samples t-test)
-- Dosed fish statistics (push code from home)
-- Upload videos of the software
-- Contraction amplitude
-- Calculate force of contraction?
-- Make bibtex file based on citation list
+TODO execution plan (step by step):
 
-(someone else)
-- Measure area of heart in systole vs diastole? Probably there's a FIJI plugin for that.
+Step 1 - Peak handling
+- [x] Identify uncoupled/sawtooth peaks in contraction traces
+  - Implemented via grouped peak consolidation in `detect_peaks`.
+
+Step 2 - Arrhythmia interpretation
+- [x] Explain how arrhythmia score works
+  - Documented in `README.md` ("How arrhythmia risk is estimated").
+
+Step 3 - Medication/control comparison
+- [x] Add statistical test to compare between medications (paired samples t-test)
+  - Implemented as `paired_ttest_pvalue_vs_control0_mean_ibi` in `data_analysis.py`.
+
+Step 4 - Concentration-level inferential statistics
+- [ ] Add ANOVA between concentrations
+  - Next action: add concentration-group ANOVA summary export in `data_analysis.py`.
+
+Step 5 - Dosed fish statistics
+- [ ] Dosed fish statistics (push code from home)
+  - Next action: define required "dosed" fields and expected output table.
+
+Step 6 - Software dissemination
+- [ ] Upload videos of the software
+  - Manual repository/media task.
+
+Step 7 - Signal magnitude metrics
+- [ ] Contraction amplitude
+  - Next action: decide per-beat vs per-sample amplitude definition.
+
+Step 8 - Biomechanics extension
+- [ ] Calculate force of contraction?
+  - Next action: define calibration/assumptions needed to infer force.
+
+Step 9 - Citation hygiene
+- [ ] Make bibtex file based on citation list
+  - Next action: enrich `python/LIST_CITE` with full bibliographic metadata first.
+
+Additional idea (someone else):
+- [ ] Measure area of heart in systole vs diastole (FIJI plugin candidate).
