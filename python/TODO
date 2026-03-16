@@ -19,9 +19,9 @@ Step 5 - Signal magnitude metrics
 - [x] Contraction amplitude
   - This should look at the beat-per-beat amplitude size, and overall per fish the average size and variation/standard deviation
 
-Step 8 - Biomechanics extension
+Step 6 - Biomechanics extension
 - [x] Calculate force of contraction using the speed of contraction.
   - This can be in arbitrary units
 
-Step 9 - Citation hygiene
+Step 7 - Citation hygiene
 - [x] Make bibtex file based on citation list

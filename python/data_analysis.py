@@ -658,7 +658,7 @@ def add_control_pvalues(full_df):
     return df
 
 
-def add_medication_pvalues(full_df):
+def add_terf_vs_phe_pvalue(full_df):
     """Add global paired t-test p-value comparing Terf vs Phe mean IBI."""
     df = full_df.copy()
     exposures = df["exposure"].astype(str)
@@ -917,7 +917,11 @@ def run_concentration_anova(summary_df, output_dir):
     if summary_df.empty:
         return {}
 
-    metrics = ["arrhythmia_risk_score", "mean_ibi_ms", "contraction_amplitude_mean"]
+    metrics = [
+        metric
+        for metric in ["arrhythmia_risk_score", "mean_ibi_ms", "contraction_amplitude_mean"]
+        if metric in summary_df.columns
+    ]
     for exposure, exposure_df in summary_df.groupby("exposure"):
         exposure_df = exposure_df.copy()
         exposure_df["concentration_str"] = exposure_df["concentration"].astype(str)
@@ -1405,7 +1409,7 @@ def run_analysis(
     # Build summary DataFrame (exclude per-beat IBI lists for the CSV)
     full_df = pd.DataFrame(all_results)
     full_df = add_control_pvalues(full_df)
-    full_df = add_medication_pvalues(full_df)
+    full_df = add_terf_vs_phe_pvalue(full_df)
     df = full_df[SUMMARY_COLUMNS]
     csv_path = os.path.join(output_dir, "hrv_summary.csv")
     df.to_csv(csv_path, index=False)
