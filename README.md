@@ -21,6 +21,18 @@ The script creates a heuristic `arrhythmia_risk_score` between **0** and **1** f
 
 Each of these three signals is converted to a 0-to-1 score and then averaged into one final risk score.
 
+Detailed implementation (`compute_arrhythmia_risk` in `python/data_analysis.py`):
+
+1. Compute `cv = std(IBI) / mean(IBI)` and transform with a logistic curve: `logistic(cv, midpoint=0.15, steepness=30)`.
+2. Compute relative RMSSD, `rmssd_rel = RMSSD / mean(IBI)`, then apply `logistic(rmssd_rel, midpoint=0.15, steepness=30)`.
+3. Compute outlier fraction as the proportion of IBIs deviating by more than 30% from the median IBI, then apply `logistic(outlier_fraction, midpoint=0.15, steepness=20)`.
+4. Average the three component scores:
+   - `arrhythmia_risk_score = mean(score_cv, score_rmssd, score_outlier)`.
+5. Set quality flags:
+   - fewer than 3 IBIs: insufficient, score set to `NaN`
+   - 3 to 5 IBIs: score reported with `low_ibi_count`
+   - at least 6 IBIs: `ok`
+
 - A value closer to **1** means more irregular rhythm.
 - A value closer to **0** means more regular rhythm.
 - `arrhythmia_probability` is kept as a compatibility alias of `arrhythmia_risk_score`.
@@ -48,6 +60,7 @@ After each run, the script also writes:
 - `output/logistic_regression_coefficients.csv`
 - `output/logistic_regression_summary.csv`
 - `output/linear_trend_summary.csv`
+- `output/anova_concentration_summary.csv`
 - `output/unsupervised_assignments.csv`
 - `output/unsupervised_cluster_summary.csv`
 - `output/unsupervised_kmeans_centers.csv`
