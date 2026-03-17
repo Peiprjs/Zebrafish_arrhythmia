@@ -1014,6 +1014,30 @@ def main():
     with st.sidebar.expander("Variables & abbreviations", expanded=False):
         st.markdown(VARIABLE_GLOSSARY_MARKDOWN)
     with st.sidebar.expander("Settings", expanded=False):
+        all_tab_specs = [
+            ("Fish profile", "fish"),
+            ("Dose profile", "dose"),
+            ("HRV over time", "hrv"),
+            ("Contraction amplitude analysis", "amplitude"),
+            ("Contraction force analysis", "force"),
+            ("Transients analysis", "transients"),
+            ("Data table", "data_table"),
+            ("Statistical analysis", "statistical_analysis"),
+            ("Graphs", "graphs"),
+            ("Model summaries", "models"),
+            ("Conclusions", "conclusions"),
+            ("Technical architecture", "technical")
+        ]
+
+        all_tab_labels = [label for label, _ in all_tab_specs]
+
+        st.markdown("### View Options")
+        selected_tabs = st.segmented_control(
+            "Select visible tabs",
+            options=all_tab_labels,
+            default=["Fish profile", "Statistical analysis", "Graphs"],
+            selection_mode="multi"
+        )
         st.caption("Data source")
         st.text_input("MM_Results folder", key="results_dir")
         st.text_input("Output folder", key="output_dir")
@@ -1034,30 +1058,6 @@ def main():
     c2.metric("Exposure groups", int(filtered_df["exposure"].nunique()))
     c3.metric("Dose groups", int(filtered_df["concentration"].nunique()))
 
-    all_tab_specs = [
-        ("Fish profile", "fish"),
-        ("Dose profile", "dose"),
-        ("HRV over time", "hrv"),
-        ("Contraction amplitude analysis", "amplitude"),
-        ("Contraction force analysis", "force"),
-        ("Transients analysis", "transients"),
-        ("Data table", "data_table"),
-        ("Statistical analysis", "statistical_analysis"),
-        ("Graphs", "graphs"),
-        ("Model summaries", "models"),
-        ("Conclusions", "conclusions"),
-        ("Technical architecture", "technical")
-    ]
-    
-    all_tab_labels = [label for label, _ in all_tab_specs]
-    
-    st.markdown("### View Options")
-    selected_tabs = st.segmented_control(
-        "Select visible tabs",
-        options=all_tab_labels,
-        default=["Fish profile", "Statistical analysis", "Graphs"],
-        selection_mode="multi"
-    )
     
     if not selected_tabs:
         st.info("Please select at least one tab to view.")
