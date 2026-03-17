@@ -114,6 +114,13 @@ def _pretty_metric_label(name):
         "mean_hr_bpm": "Mean heart rate (beats per minute)",
         "snr": "Signal-to-Noise Ratio (dB)",
         "baseline_drift": "Baseline drift",
+        "contraction_amplitude_mean": "Mean contraction amplitude",
+        "contraction_amplitude_range": "Contraction amplitude range",
+        "force_of_contraction_mean_au": "Mean force of contraction (a.u.)",
+        "transient_rise_time_mean_ms": "Mean transient rise time (ms)",
+        "transient_decay_time_mean_ms": "Mean transient decay time (ms)",
+        "transient_fwhm_mean_ms": "Mean transient FWHM (ms)",
+        "transient_duration_mean_ms": "Mean transient duration (ms)",
     }
     return label_map.get(name, name.replace("_", " "))
 
@@ -382,7 +389,6 @@ def _apply_text_wrap_css():
 def _render_tab_fish(selected_sample, record_by_sample):
     fish_record = record_by_sample[selected_sample]
     _plot_fish_profile(fish_record)
-    _plot_speed_profile(fish_record)
     _plot_fish_hrv(fish_record)
 
 def _render_tab_dose(filtered_records):
@@ -424,44 +430,200 @@ def _render_tab_hrv(filtered_records):
         )
 
 
-def _render_tab_metrics(filtered_df):
+def _render_tab_data_table(filtered_df):
     st.dataframe(filtered_df.reset_index(drop=True), use_container_width=True)
 
+def _render_tab_statistical_analysis(filtered_df):
     numeric_cols = [
         col for col in filtered_df.columns
         if pd.api.types.is_numeric_dtype(filtered_df[col])
     ]
-    if numeric_cols:
-        preferred_metrics = [
-            "mean_ibi_ms",
-            "arrhythmia_risk_score",
-            "arrhythmia_probability",
-        ]
-        default_metric = next(
-            (metric_name for metric_name in preferred_metrics if metric_name in numeric_cols),
-            numeric_cols[0],
+    if not numeric_cols:
+        st.info("No numeric columns available for statistical analysis.")
+        return
+        
+    preferred_metrics = [
+        "mean_ibi_ms",
+        "arrhythmia_risk_score",
+        "arrhythmia_probability",
+    ]
+    default_metric = next(
+        (metric_name for metric_name in preferred_metrics if metric_name in numeric_cols),
+        numeric_cols[0],
+    )
+    metric = st.selectbox("Metric for statistical tests", numeric_cols, index=numeric_cols.index(default_metric), key="stat_metric")
+    group_options = ["exposure", "concentration"]
+    default_group_by = "concentration"
+    group_by = st.selectbox(
+        "Group by",
+        group_options,
+        index=group_options.index(default_group_by),
+        key="stat_group"
+    )
+
+    grouped_values = []
+    labels = []
+    if group_by == "concentration":
+        grouped_items = sorted(
+            filtered_df.groupby(group_by),
+            key=lambda item: _safe_float_sort_key(item[0]),
         )
-        metric = st.selectbox("Metric distribution", numeric_cols, index=numeric_cols.index(default_metric))
-        group_options = ["exposure", "concentration"]
-        default_group_by = "concentration"
-        group_by = st.selectbox(
-            "Group by",
-            group_options,
-            index=group_options.index(default_group_by),
+    else:
+        grouped_items = sorted(
+            filtered_df.groupby(group_by),
+            key=lambda item: str(item[0]),
         )
 
+    for name, group in grouped_items:
+        values = group[metric].dropna().to_numpy(dtype=float)
+        if len(values) == 0:
+            continue
+        grouped_values.append(values)
+        labels.append(str(name))
+
+    if grouped_values:
+        significance_flags, p_values, significance_label = _group_significance(
+            grouped_values, labels, group_by, alpha=0.05
+        )
+        
+        stat_df = pd.DataFrame({
+            group_label.capitalize(): labels,
+            "p-value": p_values,
+            "Significant (p < 0.05)": significance_flags
+        })
+        st.markdown(f"**Statistical significance of {metric} grouped by {group_by}**")
+        st.caption(significance_label)
+        st.dataframe(stat_df, use_container_width=True)
+
+def _render_tab_graphs(filtered_df):
+    numeric_cols = [
+        col for col in filtered_df.columns
+        if pd.api.types.is_numeric_dtype(filtered_df[col])
+    ]
+    if not numeric_cols:
+        st.info("No numeric columns available for graphing.")
+        return
+
+    preferred_metrics = [
+        "mean_ibi_ms",
+        "arrhythmia_risk_score",
+        "arrhythmia_probability",
+    ]
+    default_metric = next(
+        (metric_name for metric_name in preferred_metrics if metric_name in numeric_cols),
+        numeric_cols[0],
+    )
+    metric = st.selectbox("Metric distribution", numeric_cols, index=numeric_cols.index(default_metric), key="graph_metric")
+    group_options = ["exposure", "concentration"]
+    default_group_by = "concentration"
+    group_by = st.selectbox(
+        "Group by",
+        group_options,
+        index=group_options.index(default_group_by),
+        key="graph_group"
+    )
+
+    grouped_values = []
+    labels = []
+    if group_by == "concentration":
+        grouped_items = sorted(
+            filtered_df.groupby(group_by),
+            key=lambda item: _safe_float_sort_key(item[0]),
+        )
+    else:
+        grouped_items = sorted(
+            filtered_df.groupby(group_by),
+            key=lambda item: str(item[0]),
+        )
+
+    for name, group in grouped_items:
+        values = group[metric].dropna().to_numpy(dtype=float)
+        if len(values) == 0:
+            continue
+        grouped_values.append(values)
+        labels.append(str(name))
+
+    if grouped_values:
+        significance_flags, p_values, significance_label = _group_significance(
+            grouped_values, labels, group_by, alpha=0.05
+        )
+        display_labels = []
+        for label, is_significant, p_value in zip(labels, significance_flags, p_values):
+            significance_marker = "*" if is_significant else ""
+            if np.isfinite(p_value):
+                display_labels.append(f"{label}{significance_marker}\n(p={p_value:.3g})")
+            else:
+                display_labels.append(f"{label}{significance_marker}\n(p=n/a)")
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.boxplot(
+            grouped_values,
+            tick_labels=display_labels,
+            showmeans=True,
+            patch_artist=True,
+            boxprops={"facecolor": "tab:blue", "alpha": 0.25, "edgecolor": "tab:blue"},
+            medianprops={"color": "tab:orange", "linewidth": 1.8},
+            meanprops={
+                "marker": "D",
+                "markerfacecolor": "tab:green",
+                "markeredgecolor": "tab:green",
+                "markersize": 5,
+            },
+        )
+        metric_label = _pretty_metric_label(metric)
+        group_label = _pretty_group_label(group_by)
+        ax.set_title(f"Distribution of {metric_label} by {group_label}")
+        ax.set_xlabel(group_label.capitalize())
+        ax.set_ylabel(metric_label)
+        ax.grid(axis="y", alpha=0.2)
+        ax.tick_params(axis="x", labelsize=8)
+        ax.legend(
+            handles=[
+                Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.25, label="IQR (Q1-Q3)"),
+                Line2D([0], [0], color="tab:orange", lw=1.8, label="Median"),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="D",
+                    color="tab:green",
+                    markerfacecolor="tab:green",
+                    linestyle="None",
+                    label="Mean",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="*",
+                    color="crimson",
+                    markerfacecolor="crimson",
+                    linestyle="None",
+                    label=significance_label,
+                ),
+            ],
+            loc="best",
+            fontsize=8,
+        )
+        plt.xticks(rotation=30, ha="right")
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+
+    
+def _plot_metric_boxplots(filtered_df, metrics, title_prefix):
+    """Helper to plot boxplots for a set of metrics grouped by concentration."""
+    group_by = "concentration"
+    
+    for metric in metrics:
+        if metric not in filtered_df.columns:
+            st.warning(f"Metric {metric} not found in the data.")
+            continue
+            
         grouped_values = []
         labels = []
-        if group_by == "concentration":
-            grouped_items = sorted(
-                filtered_df.groupby(group_by),
-                key=lambda item: _safe_float_sort_key(item[0]),
-            )
-        else:
-            grouped_items = sorted(
-                filtered_df.groupby(group_by),
-                key=lambda item: str(item[0]),
-            )
+        grouped_items = sorted(
+            filtered_df.groupby(group_by),
+            key=lambda item: _safe_float_sort_key(item[0]),
+        )
 
         for name, group in grouped_items:
             values = group[metric].dropna().to_numpy(dtype=float)
@@ -470,69 +632,101 @@ def _render_tab_metrics(filtered_df):
             grouped_values.append(values)
             labels.append(str(name))
 
-        if grouped_values:
-            significance_flags, p_values, significance_label = _group_significance(
-                grouped_values, labels, group_by, alpha=0.05
-            )
-            display_labels = []
-            for label, is_significant, p_value in zip(labels, significance_flags, p_values):
-                significance_marker = "*" if is_significant else ""
-                if np.isfinite(p_value):
-                    display_labels.append(f"{label}{significance_marker}\n(p={p_value:.3g})")
-                else:
-                    display_labels.append(f"{label}{significance_marker}\n(p=n/a)")
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.boxplot(
-                grouped_values,
-                tick_labels=display_labels,
-                showmeans=True,
-                patch_artist=True,
-                boxprops={"facecolor": "tab:blue", "alpha": 0.25, "edgecolor": "tab:blue"},
-                medianprops={"color": "tab:orange", "linewidth": 1.8},
-                meanprops={
-                    "marker": "D",
-                    "markerfacecolor": "tab:green",
-                    "markeredgecolor": "tab:green",
-                    "markersize": 5,
-                },
-            )
-            metric_label = _pretty_metric_label(metric)
-            group_label = _pretty_group_label(group_by)
-            ax.set_title(f"Distribution of {metric_label} by {group_label}")
-            ax.set_xlabel(group_label.capitalize())
-            ax.set_ylabel(metric_label)
-            ax.grid(axis="y", alpha=0.2)
-            ax.tick_params(axis="x", labelsize=8)
-            ax.legend(
-                handles=[
-                    Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.25, label="IQR (Q1-Q3)"),
-                    Line2D([0], [0], color="tab:orange", lw=1.8, label="Median"),
-                    Line2D(
-                        [0],
-                        [0],
-                        marker="D",
-                        color="tab:green",
-                        markerfacecolor="tab:green",
-                        linestyle="None",
-                        label="Mean",
-                    ),
-                    Line2D(
-                        [0],
-                        [0],
-                        marker="*",
-                        color="crimson",
-                        markerfacecolor="crimson",
-                        linestyle="None",
-                        label=significance_label,
-                    ),
-                ],
-                loc="best",
-                fontsize=8,
-            )
-            plt.xticks(rotation=30, ha="right")
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close(fig)
+        if not grouped_values:
+            continue
+
+        significance_flags, p_values, significance_label = _group_significance(
+            grouped_values, labels, group_by, alpha=0.05
+        )
+        display_labels = []
+        for label, is_significant, p_value in zip(labels, significance_flags, p_values):
+            significance_marker = "*" if is_significant else ""
+            if np.isfinite(p_value):
+                display_labels.append(f"{label}{significance_marker}\n(p={p_value:.3g})")
+            else:
+                display_labels.append(f"{label}{significance_marker}\n(p=n/a)")
+                
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.boxplot(
+            grouped_values,
+            tick_labels=display_labels,
+            showmeans=True,
+            patch_artist=True,
+            boxprops={"facecolor": "tab:blue", "alpha": 0.25, "edgecolor": "tab:blue"},
+            medianprops={"color": "tab:orange", "linewidth": 1.8},
+            meanprops={
+                "marker": "D",
+                "markerfacecolor": "tab:green",
+                "markeredgecolor": "tab:green",
+                "markersize": 5,
+            },
+        )
+        metric_label = _pretty_metric_label(metric)
+        group_label = _pretty_group_label(group_by)
+        ax.set_title(f"{title_prefix}: {metric_label} by {group_label}")
+        ax.set_xlabel(group_label.capitalize())
+        ax.set_ylabel(metric_label)
+        ax.grid(axis="y", alpha=0.2)
+        ax.tick_params(axis="x", labelsize=8)
+        ax.legend(
+            handles=[
+                Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.25, label="IQR (Q1-Q3)"),
+                Line2D([0], [0], color="tab:orange", lw=1.8, label="Median"),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="D",
+                    color="tab:green",
+                    markerfacecolor="tab:green",
+                    linestyle="None",
+                    label="Mean",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="*",
+                    color="crimson",
+                    markerfacecolor="crimson",
+                    linestyle="None",
+                    label=significance_label,
+                ),
+            ],
+            loc="best",
+            fontsize=8,
+        )
+        plt.xticks(rotation=30, ha="right")
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+def _render_tab_contraction_amplitude(filtered_df):
+    st.subheader("Contraction Amplitude Analysis")
+    metrics = ["contraction_amplitude_mean", "contraction_amplitude_range"]
+    _plot_metric_boxplots(filtered_df, metrics, "Amplitude Distribution")
+    
+def _render_tab_contraction_force(filtered_df, selected_sample, record_by_sample):
+    st.subheader("Contraction Force Analysis")
+    st.markdown(f"**Force Profile for {selected_sample}**")
+    if selected_sample in record_by_sample:
+        fish_record = record_by_sample[selected_sample]
+        _plot_speed_profile(fish_record)
+        
+    metrics = [
+        "force_of_contraction_mean_au",
+        "force_of_contraction_std_au",
+        "force_of_contraction_peak_au"
+    ]
+    _plot_metric_boxplots(filtered_df, metrics, "Force Distribution")
+    
+def _render_tab_transients(filtered_df):
+    st.subheader("Transients Analysis")
+    metrics = [
+        "transient_rise_time_mean_ms",
+        "transient_decay_time_mean_ms", 
+        "transient_duration_mean_ms",
+        "transient_fwhm_mean_ms"
+    ]
+    _plot_metric_boxplots(filtered_df, metrics, "Transient Distribution")
 
 def _render_tab_models(output_dir, model_tables):
     st.caption(f"Model outputs loaded from `{output_dir}`")
@@ -768,10 +962,7 @@ def main():
         st.session_state["results_dir"] = default_results
     if "output_dir" not in st.session_state:
         st.session_state["output_dir"] = default_output
-    if "show_advanced_tabs" not in st.session_state:
-        st.session_state["show_advanced_tabs"] = False
-    if "show_technical_tab" not in st.session_state:
-        st.session_state["show_technical_tab"] = False
+
 
     results_dir = os.path.abspath(st.session_state["results_dir"])
     output_dir = os.path.abspath(st.session_state["output_dir"])
@@ -823,16 +1014,6 @@ def main():
     with st.sidebar.expander("Variables & abbreviations", expanded=False):
         st.markdown(VARIABLE_GLOSSARY_MARKDOWN)
     with st.sidebar.expander("Settings", expanded=False):
-        st.checkbox(
-            "Show Model summaries and Conclusions tabs",
-            key="show_advanced_tabs",
-            help="Toggle visibility of the advanced model and interpretation tabs.",
-        )
-        st.checkbox(
-            "Show Technical architecture tab",
-            key="show_technical_tab",
-            help="Toggle visibility of the technical architecture documentation tab.",
-        )
         st.caption("Data source")
         st.text_input("MM_Results folder", key="results_dir")
         st.text_input("Output folder", key="output_dir")
@@ -853,49 +1034,84 @@ def main():
     c2.metric("Exposure groups", int(filtered_df["exposure"].nunique()))
     c3.metric("Dose groups", int(filtered_df["concentration"].nunique()))
 
-    show_advanced_tabs = bool(st.session_state.get("show_advanced_tabs", True))
-    show_technical_tab = bool(st.session_state.get("show_technical_tab", False))
-
-    tab_specs = [
+    all_tab_specs = [
         ("Fish profile", "fish"),
         ("Dose profile", "dose"),
         ("HRV over time", "hrv"),
-        ("All variables", "metrics"),
+        ("Contraction amplitude analysis", "amplitude"),
+        ("Contraction force analysis", "force"),
+        ("Transients analysis", "transients"),
+        ("Data table", "data_table"),
+        ("Statistical analysis", "statistical_analysis"),
+        ("Graphs", "graphs"),
+        ("Model summaries", "models"),
+        ("Conclusions", "conclusions"),
+        ("Technical architecture", "technical")
     ]
-    if show_advanced_tabs:
-        tab_specs.extend(
-            [
-                ("Model summaries", "models"),
-                ("Conclusions", "conclusions"),
-            ]
-        )
-    if show_technical_tab:
-        tab_specs.append(("Technical architecture", "technical"))
+    
+    all_tab_labels = [label for label, _ in all_tab_specs]
+    
+    st.markdown("### View Options")
+    selected_tabs = st.segmented_control(
+        "Select visible tabs",
+        options=all_tab_labels,
+        default=["Fish profile", "Statistical analysis", "Graphs"],
+        selection_mode="multi"
+    )
+    
+    if not selected_tabs:
+        st.info("Please select at least one tab to view.")
+        return
+        
+    visible_tab_specs = [(label, key) for label, key in all_tab_specs if label in selected_tabs]
+    tab_objects = st.tabs([label for label, _ in visible_tab_specs])
+    tab_by_key = {key: tab for (_, key), tab in zip(visible_tab_specs, tab_objects)}
 
-    tab_objects = st.tabs([label for label, _ in tab_specs])
-    tab_by_key = {key: tab for (_, key), tab in zip(tab_specs, tab_objects)}
+    if "fish" in tab_by_key:
+        with tab_by_key["fish"]:
+            _render_tab_fish(selected_sample, record_by_sample)
 
-    with tab_by_key["fish"]:
-        _render_tab_fish(selected_sample, record_by_sample)
+    if "dose" in tab_by_key:
+        with tab_by_key["dose"]:
+            _render_tab_dose(filtered_records)
 
-    with tab_by_key["dose"]:
-        _render_tab_dose(filtered_records)
+    if "hrv" in tab_by_key:
+        with tab_by_key["hrv"]:
+            _render_tab_hrv(filtered_records)
+            
+    if "amplitude" in tab_by_key:
+        with tab_by_key["amplitude"]:
+            _render_tab_contraction_amplitude(filtered_df)
+            
+    if "force" in tab_by_key:
+        with tab_by_key["force"]:
+            _render_tab_contraction_force(filtered_df, selected_sample, record_by_sample)
+            
+    if "transients" in tab_by_key:
+        with tab_by_key["transients"]:
+            _render_tab_transients(filtered_df)
 
-    with tab_by_key["hrv"]:
-        _render_tab_hrv(filtered_records)
+    if "data_table" in tab_by_key:
+        with tab_by_key["data_table"]:
+            _render_tab_data_table(filtered_df)
+            
+    if "statistical_analysis" in tab_by_key:
+        with tab_by_key["statistical_analysis"]:
+            _render_tab_statistical_analysis(filtered_df)
+            
+    if "graphs" in tab_by_key:
+        with tab_by_key["graphs"]:
+            _render_tab_graphs(filtered_df)
 
-    with tab_by_key["metrics"]:
-        _render_tab_metrics(filtered_df)
-
-    if show_advanced_tabs and "models" in tab_by_key:
+    if "models" in tab_by_key:
         with tab_by_key["models"]:
             _render_tab_models(output_dir, model_tables)
 
-    if show_advanced_tabs and "conclusions" in tab_by_key:
+    if "conclusions" in tab_by_key:
         with tab_by_key["conclusions"]:
             _render_tab_conclusions(filtered_df, model_tables)
 
-    if show_technical_tab and "technical" in tab_by_key:
+    if "technical" in tab_by_key:
         with tab_by_key["technical"]:
             _render_tab_technical(results_dir, output_dir)
 

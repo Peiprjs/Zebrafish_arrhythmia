@@ -49,8 +49,9 @@ SUMMARY_COLUMNS = [
     "paired_ttest_pvalue_vs_control0_mean_ibi",
     "paired_ttest_pvalue_terf_vs_phe_mean_ibi",
     "uncoupled_peak_count", "uncoupled_peak_fraction",
-    "contraction_amplitude_mean", "contraction_amplitude_std",
+    "contraction_amplitude_mean", "contraction_amplitude_std", "contraction_amplitude_range",
     "force_of_contraction_mean_au", "force_of_contraction_std_au", "force_of_contraction_peak_au",
+    "transient_rise_time_mean_ms", "transient_decay_time_mean_ms", "transient_fwhm_mean_ms", "transient_duration_mean_ms",
     "Arrhymia",
     "snr", "baseline_drift",
 ]
@@ -366,6 +367,110 @@ def compute_contraction_amplitudes(signal, peak_indices):
 
     return np.asarray(amplitudes, dtype=float)
 
+
+def compute_transient_metrics(time_ms, signal, peak_indices):
+    """Compute transient metrics (rise time, decay time, FWHM, duration) for each beat."""
+    time_ms = np.asarray(time_ms, dtype=float)
+    signal = np.asarray(signal, dtype=float)
+    peak_indices = np.asarray(peak_indices, dtype=int)
+    
+    if len(signal) < 3 or len(peak_indices) == 0:
+        return {
+            "transient_rise_time_mean_ms": np.nan,
+            "transient_decay_time_mean_ms": np.nan,
+            "transient_fwhm_mean_ms": np.nan,
+            "transient_duration_mean_ms": np.nan,
+            "transient_rise_times_ms": [],
+            "transient_decay_times_ms": [],
+            "transient_fwhms_ms": [],
+            "transient_durations_ms": [],
+        }
+
+    rise_times = []
+    decay_times = []
+    fwhms = []
+    durations = []
+    
+    # We define boundaries using the midpoints between peaks, similar to contraction amplitudes
+    boundaries = [0]
+    for i in range(len(peak_indices) - 1):
+        midpoint = (peak_indices[i] + peak_indices[i+1]) // 2
+        boundaries.append(midpoint)
+    boundaries.append(len(signal) - 1)
+    
+    for i, peak_idx in enumerate(peak_indices):
+        left_bound = boundaries[i]
+        right_bound = boundaries[i+1]
+        
+        window_idx = np.arange(left_bound, right_bound + 1)
+        window = signal[window_idx]
+        if len(window) < 3:
+            continue
+            
+        peak_val = signal[peak_idx]
+        
+        # Left side (Rise)
+        left_window_idx = np.arange(left_bound, peak_idx + 1)
+        if len(left_window_idx) > 0:
+            left_window = signal[left_window_idx]
+            left_min_idx = left_window_idx[np.argmin(left_window)]
+            left_min_val = signal[left_min_idx]
+            rise_time = time_ms[peak_idx] - time_ms[left_min_idx]
+            rise_times.append(max(0.0, rise_time))
+        else:
+            left_min_val = np.nan
+            
+        # Right side (Decay)
+        right_window_idx = np.arange(peak_idx, right_bound + 1)
+        if len(right_window_idx) > 0:
+            right_window = signal[right_window_idx]
+            right_min_idx = right_window_idx[np.argmin(right_window)]
+            right_min_val = signal[right_min_idx]
+            decay_time = time_ms[right_min_idx] - time_ms[peak_idx]
+            decay_times.append(max(0.0, decay_time))
+        else:
+            right_min_val = np.nan
+            
+        # Duration
+        if len(left_window_idx) > 0 and len(right_window_idx) > 0:
+            duration = time_ms[right_min_idx] - time_ms[left_min_idx]
+            durations.append(max(0.0, duration))
+            
+        # FWHM
+        if not np.isnan(left_min_val) and not np.isnan(right_min_val):
+            baseline = min(left_min_val, right_min_val) # Conservative baseline
+            amplitude = peak_val - baseline
+            half_max = baseline + amplitude / 2.0
+            
+            # Find closest points to half-max on left and right
+            # Left crossing
+            left_cross_idx = None
+            for j in range(peak_idx, left_min_idx - 1, -1):
+                if signal[j] <= half_max:
+                    left_cross_idx = j
+                    break
+                    
+            # Right crossing
+            right_cross_idx = None
+            for j in range(peak_idx, right_min_idx + 1):
+                if signal[j] <= half_max:
+                    right_cross_idx = j
+                    break
+                    
+            if left_cross_idx is not None and right_cross_idx is not None:
+                fwhm = time_ms[right_cross_idx] - time_ms[left_cross_idx]
+                fwhms.append(max(0.0, fwhm))
+                
+    return {
+        "transient_rise_time_mean_ms": float(np.mean(rise_times)) if rise_times else np.nan,
+        "transient_decay_time_mean_ms": float(np.mean(decay_times)) if decay_times else np.nan,
+        "transient_fwhm_mean_ms": float(np.mean(fwhms)) if fwhms else np.nan,
+        "transient_duration_mean_ms": float(np.mean(durations)) if durations else np.nan,
+        "transient_rise_times_ms": rise_times,
+        "transient_decay_times_ms": decay_times,
+        "transient_fwhms_ms": fwhms,
+        "transient_durations_ms": durations,
+    }
 
 def compute_force_of_contraction(speed_values):
     """Estimate force proxy from speed-of-contraction profile in arbitrary units."""
@@ -1169,10 +1274,13 @@ def analyse_sample_timeseries(
     if len(amplitudes) > 0:
         amplitude_mean = float(np.mean(amplitudes))
         amplitude_std = float(np.std(amplitudes, ddof=1)) if len(amplitudes) > 1 else 0.0
+        amplitude_range = float(np.max(amplitudes) - np.min(amplitudes))
     else:
         amplitude_mean = np.nan
         amplitude_std = np.nan
+        amplitude_range = np.nan
     force_metrics = compute_force_of_contraction(speed_values)
+    transient_metrics = compute_transient_metrics(time_ms, signal, peak_indices)
     uncoupled_count = int(np.sum(np.asarray(sawtooth_peak, dtype=bool)))
     uncoupled_fraction = (
         float(uncoupled_count / len(peak_times))
@@ -1207,7 +1315,16 @@ def analyse_sample_timeseries(
         "uncoupled_peak_fraction": uncoupled_fraction,
         "contraction_amplitude_mean": amplitude_mean,
         "contraction_amplitude_std": amplitude_std,
+        "contraction_amplitude_range": amplitude_range,
         **force_metrics,
+        "transient_rise_time_mean_ms": transient_metrics["transient_rise_time_mean_ms"],
+        "transient_decay_time_mean_ms": transient_metrics["transient_decay_time_mean_ms"],
+        "transient_fwhm_mean_ms": transient_metrics["transient_fwhm_mean_ms"],
+        "transient_duration_mean_ms": transient_metrics["transient_duration_mean_ms"],
+        "transient_rise_times_ms": transient_metrics["transient_rise_times_ms"],
+        "transient_decay_times_ms": transient_metrics["transient_decay_times_ms"],
+        "transient_fwhms_ms": transient_metrics["transient_fwhms_ms"],
+        "transient_durations_ms": transient_metrics["transient_durations_ms"],
         "Arrhymia": arr_decision,
         **quality,
     }
