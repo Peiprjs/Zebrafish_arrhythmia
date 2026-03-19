@@ -24,7 +24,3 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
-
-# Output artifacts
-output/
-/MM_Results
