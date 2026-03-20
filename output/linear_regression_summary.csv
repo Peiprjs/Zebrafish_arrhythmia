@@ -1,0 +1,2 @@
+model,n_samples,n_parameters,dof,r_squared,rss
+linear_regression,38,3,35,0.18076440133982097,3.2345622708635657

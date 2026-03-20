@@ -1,0 +1,8 @@
+model,cluster_id,n_samples,arrhythmia_rate,mean_arrhythmia_risk_score
+cluster_kmeans_k2,1,1,1.0,0.998942439052505
+cluster_kmeans_k2,2,37,0.21621621621621623,0.26413693659199644
+cluster_kmeans_k3,1,36,0.19444444444444445,0.243737242971975
+cluster_kmeans_k3,2,1,1.0,0.998942439052505
+cluster_kmeans_k3,3,1,1.0,0.9985259069127665
+cluster_hierarchical_k2,1,37,0.21621621621621623,0.26413693659199644
+cluster_hierarchical_k2,2,1,1.0,0.998942439052505
