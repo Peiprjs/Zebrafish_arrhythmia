@@ -485,6 +485,7 @@ def _render_tab_statistical_analysis(filtered_df):
         significance_flags, p_values, significance_label = _group_significance(
             grouped_values, labels, group_by, alpha=0.05
         )
+        group_label = _pretty_group_label(group_by)
         
         stat_df = pd.DataFrame({
             group_label.capitalize(): labels,
