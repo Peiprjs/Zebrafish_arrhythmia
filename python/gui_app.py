@@ -920,6 +920,46 @@ def _render_tab_technical(results_dir, output_dir):
         "- Rolling RMSSD uses a fixed window (`ROLLING_RMSSD_WINDOW = 5`) over consecutive IBI segments."
     )
 
+    st.markdown("### Contraction amplitude analysis pipeline")
+    st.markdown(
+        "Amplitude features are computed upstream in `data_analysis.compute_contraction_amplitudes(...)`:\n"
+        "- For each detected peak, the local trough is taken from the interval between the previous peak boundary "
+        "and the current peak.\n"
+        "- Beat amplitude is `peak_value - trough_value`, clipped to `>= 0`.\n"
+        "- Per-sample summary metrics are persisted as `contraction_amplitude_mean`, "
+        "`contraction_amplitude_std`, and `contraction_amplitude_range`.\n"
+        "- The **Contraction amplitude analysis** tab renders concentration-grouped boxplots for "
+        "`contraction_amplitude_mean` and `contraction_amplitude_range`, with significance annotations."
+    )
+
+    st.markdown("### Contraction force analysis pipeline")
+    st.markdown(
+        "Force proxy features are derived from `speed-of-contraction.txt` and "
+        "`data_analysis.compute_force_of_contraction(...)`:\n"
+        "- If speed data exists, the dashboard records `speed_time_ms` and `speed_values`; otherwise empty arrays "
+        "are carried through.\n"
+        "- Force metrics use non-negative speed (`clip(speed, 0, +inf)`) and report "
+        "`force_of_contraction_mean_au`, `force_of_contraction_std_au`, and `force_of_contraction_peak_au`.\n"
+        "- If finite speed values are unavailable, these metrics are `NaN`.\n"
+        "- The **Contraction force analysis** tab combines a fish-level speed profile view "
+        "(`_plot_speed_profile`) with concentration-grouped boxplots for the three force metrics."
+    )
+
+    st.markdown("### Transients analysis pipeline")
+    st.markdown(
+        "Transient timing features are computed in `data_analysis.compute_transient_metrics(...)` on a "
+        "per-beat window:\n"
+        "- Beat windows are bounded by midpoints between adjacent peaks.\n"
+        "- Rise time: from left-side local minimum to peak.\n"
+        "- Decay time: from peak to right-side local minimum.\n"
+        "- Duration: from left minimum to right minimum.\n"
+        "- FWHM: crossing width around half-max, where baseline is the minimum of the left/right minima.\n"
+        "- Per-sample means are exposed as `transient_rise_time_mean_ms`, `transient_decay_time_mean_ms`, "
+        "`transient_duration_mean_ms`, and `transient_fwhm_mean_ms`.\n"
+        "- The **Transients analysis** tab renders concentration-grouped boxplots with significance annotations "
+        "for these four metrics."
+    )
+
     st.markdown("### Arrhythmia risk score and decision rule")
     st.markdown(
         "The risk score is a heuristic composite from `compute_arrhythmia_risk(...)`:\n"
