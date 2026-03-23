@@ -1,0 +1,2 @@
+model,n_samples,n_parameters,converged,status,accuracy_at_0_5,mcfadden_pseudo_r2,log_likelihood
+logistic_regression,38,3,True,Optimization terminated successfully.,0.7894736842105263,0.2404345269865793,-15.800233202382548

@@ -1,0 +1,30 @@
+Log started...
+Date: 15-2-2026
+Time: 0:22:17
+***
+Algorithm tool version number: 1.0
+recordedFramerate: 60
+speedWindow: 2
+referenceFrameSlice: 68
+maxProject: 1
+MPstartRange: 1
+MPendRange: -1
+hideIntermediateResults: 1
+checkClip: 1
+checkSpeedlinearity: 1
+autodetectReferenceFrame: 1
+***autodetectReferenceFrame parameters
+*lowValueN: 20
+*unitySelectionN: 10
+*autoDetectStart: 1
+*autoDetectStop: 300
+***
+manualReferenceFrame: 0	NOTE:overruled if autodetectReferenceFrame is true
+automaticTransientDetection: 0
+batchDirLoad: 1
+BatchDir path=/home/emmi/Documents/SATA/Research/Zebrafish/Videos/Terf_30_1.2.avi
+ 
+----------------- Evaluating file:Log_file -----------------
+Automatic detected reference frame: frame 276
+Elapsed time (ms): 511351
+----------------- Evaluation finished -----------------
