@@ -15,6 +15,7 @@ import streamlit as st
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from scipy.stats import f_oneway
+from scipy.signal import detrend
 
 from functions import paired_ttest_pvalue
 from data_analysis import (
@@ -1042,6 +1043,42 @@ def _plot_metric_boxplots(filtered_df, metrics, title_prefix, group_by_exposure=
     """Helper to plot boxplots for a set of metrics grouped by concentration."""
     group_by = "concentration"
     
+    if group_by_exposure:
+        # Get unique exposures
+        exposures = sorted(filtered_df["exposure"].unique())
+        
+        if len(exposures) <= 1:
+            # Only one exposure, show single set of plots with color-coding
+            _plot_single_metric_boxplots(filtered_df, metrics, title_prefix, group_by_exposure=True)
+        else:
+            # Multiple exposures, show side-by-side for each metric
+            for metric in metrics:
+                if metric not in filtered_df.columns:
+                    st.warning(f"Metric {metric} not found in the data.")
+                    continue
+                
+                st.markdown(f"**{_pretty_metric_label(metric)}**")
+                cols = st.columns(len(exposures))
+                for idx, exposure in enumerate(exposures):
+                    exposure_df = _filter_df_by_exposure(filtered_df, exposure)
+                    with cols[idx]:
+                        st.caption(f"{exposure} Exposure")
+                        _plot_single_metric_boxplots(
+                            exposure_df, 
+                            [metric], 
+                            title_prefix, 
+                            group_by_exposure=True,
+                            show_title=False
+                        )
+    else:
+        # Original behavior - show all together without color coding
+        _plot_single_metric_boxplots(filtered_df, metrics, title_prefix, group_by_exposure=False)
+
+
+def _plot_single_metric_boxplots(filtered_df, metrics, title_prefix, group_by_exposure=False, show_title=True):
+    """Helper to plot boxplots for a set of metrics - single exposure or combined."""
+    group_by = "concentration"
+    
     for metric in metrics:
         if metric not in filtered_df.columns:
             st.warning(f"Metric {metric} not found in the data.")
@@ -1121,7 +1158,8 @@ def _plot_metric_boxplots(filtered_df, metrics, title_prefix, group_by_exposure=
         
         metric_label = _pretty_metric_label(metric)
         group_label = _pretty_group_label(group_by)
-        ax.set_title(f"{title_prefix}: {metric_label} by {group_label}")
+        if show_title:
+            ax.set_title(f"{title_prefix}: {metric_label} by {group_label}")
         ax.set_xlabel(group_label.capitalize())
         ax.set_ylabel(metric_label)
         ax.grid(axis="y", alpha=0.2)
@@ -1344,6 +1382,13 @@ def _render_tab_distribution(filtered_df):
         exposure_counts.columns = ["Exposure", "Count"]
         exposure_counts["Percentage"] = (exposure_counts["Count"] / exposure_counts["Count"].sum() * 100).round(1)
         
+        # Map exposure colors using EXPOSURE_COLORS constant
+        color_map = {
+            "Phe": EXPOSURE_COLORS["Phe"]["primary"],
+            "Terf": EXPOSURE_COLORS["Terf"]["primary"],
+            "0": EXPOSURE_COLORS["0"]["primary"]
+        }
+        
         fig1 = px.bar(
             exposure_counts,
             x="Exposure",
@@ -1353,7 +1398,7 @@ def _render_tab_distribution(filtered_df):
             text="Count" if not show_percentages else exposure_counts.apply(
                 lambda row: f"{row['Count']} ({row['Percentage']:.1f}%)", axis=1
             ),
-            color_discrete_sequence=px.colors.qualitative.Set2
+            color_discrete_map=color_map
         )
         fig1.update_traces(textposition="outside")
         fig1.update_layout(showlegend=False, height=500)
@@ -1415,6 +1460,13 @@ def _render_tab_distribution(filtered_df):
         except:
             combo_counts = combo_counts.sort_values(["exposure", "concentration"])
         
+        # Use EXPOSURE_COLORS for consistent color coding
+        color_map = {
+            "Phe": EXPOSURE_COLORS["Phe"]["primary"],
+            "Terf": EXPOSURE_COLORS["Terf"]["primary"],
+            "0": EXPOSURE_COLORS["0"]["primary"]
+        }
+        
         fig3 = px.bar(
             combo_counts,
             x="Label",
@@ -1425,7 +1477,7 @@ def _render_tab_distribution(filtered_df):
                 lambda row: f"{row['Count']} ({row['Percentage']:.1f}%)", axis=1
             ),
             labels={"Label": "Exposure_Concentration"},
-            color_discrete_sequence=px.colors.qualitative.Set2
+            color_discrete_map=color_map
         )
         fig3.update_traces(textposition="outside")
         fig3.update_layout(height=500, xaxis_tickangle=-45)
@@ -1501,6 +1553,13 @@ def _render_tab_distribution(filtered_df):
                 arrhythmia_by_exposure["Arrhythmic"] / arrhythmia_by_exposure["Total"] * 100
             ).round(1)
             
+            # Use EXPOSURE_COLORS for consistent color coding
+            color_map = {
+                "Phe": EXPOSURE_COLORS["Phe"]["primary"],
+                "Terf": EXPOSURE_COLORS["Terf"]["primary"],
+                "0": EXPOSURE_COLORS["0"]["primary"]
+            }
+            
             fig6 = px.bar(
                 arrhythmia_by_exposure,
                 x="exposure",
@@ -1509,7 +1568,7 @@ def _render_tab_distribution(filtered_df):
                 color="exposure",
                 text="Arrhythmia_Rate_%",
                 labels={"exposure": "Exposure", "Arrhythmia_Rate_%": "Arrhythmia Rate (%)"},
-                color_discrete_sequence=px.colors.qualitative.Set2
+                color_discrete_map=color_map
             )
             fig6.update_traces(textposition="outside", texttemplate='%{text:.1f}%')
             fig6.update_layout(showlegend=False, height=500)
@@ -1695,11 +1754,12 @@ def _render_tab_technical(results_dir, output_dir):
 
 
 def _render_tab_waveform_overlay(record_by_sample, all_samples):
-    """Render tab for overlaying mean contraction waveforms from selected samples."""
+    """Render tab for overlaying contraction waveforms from selected samples with alignment and detrending."""
     st.subheader("Waveform Overlay Utility")
     st.markdown(
-        "Select multiple samples to overlay their mean contraction waveforms. "
-        "This allows visual comparison of cardiac contraction patterns across different samples."
+        "Select multiple samples to overlay their contraction waveforms. "
+        "Waveforms are aligned by their first detected heartbeat peak and baseline-corrected "
+        "for visual comparison of cardiac contraction patterns across different samples."
     )
     
     # Sample selection widget
@@ -1710,6 +1770,21 @@ def _render_tab_waveform_overlay(record_by_sample, all_samples):
         help="Choose multiple samples to compare their contraction waveforms"
     )
     
+    # Processing options
+    col1, col2 = st.columns(2)
+    with col1:
+        apply_alignment = st.checkbox(
+            "Align by first peak", 
+            value=True, 
+            help="Align all waveforms so their first detected peak occurs at time=0"
+        )
+    with col2:
+        apply_detrend = st.checkbox(
+            "Remove baseline drift", 
+            value=True, 
+            help="Apply linear detrending to remove baseline wandering"
+        )
+    
     if not selected_samples:
         st.info("Please select at least one sample to display waveforms.")
         return
@@ -1717,10 +1792,20 @@ def _render_tab_waveform_overlay(record_by_sample, all_samples):
     if len(selected_samples) > 20:
         st.warning("You've selected more than 20 samples. The plot may be cluttered.")
     
-    # Load data for selected samples and compute mean waveforms
+    # Load and process data for selected samples
     import plotly.graph_objects as go
     
     fig = go.Figure()
+    summary_data = []
+    color_idx = 0
+    
+    # Define color palette (expand beyond EXPOSURE_COLORS)
+    color_palette = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+        "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+        "#c49c94", "#f7b6d2", "#c7c7c7", "#dbdb8d", "#9edae5"
+    ]
     
     for sample_id in selected_samples:
         if sample_id not in record_by_sample:
@@ -1729,30 +1814,81 @@ def _render_tab_waveform_overlay(record_by_sample, all_samples):
             
         record = record_by_sample[sample_id]
         time_ms = np.asarray(record.get("time_ms", []), dtype=float)
-        contraction_values = np.asarray(record.get("contraction_values", []), dtype=float)
+        contraction_values = np.asarray(record.get("contraction_values", []), dtype=float).copy()
+        peak_indices = np.asarray(record.get("peak_indices", []), dtype=int)
         
         if len(time_ms) < 2 or len(contraction_values) < 2:
             st.warning(f"Insufficient data for sample {sample_id}")
             continue
         
-        # Normalize time to start at 0
-        time_s = (time_ms - time_ms[0]) / 1000.0  # Convert to seconds
+        # Extract exposure from sample_id for color mapping
+        exposure = sample_id.split("_")[0] if "_" in sample_id else None
+        
+        # Determine color
+        if exposure and exposure in EXPOSURE_COLORS:
+            color = EXPOSURE_COLORS[exposure]["primary"]
+        else:
+            color = color_palette[color_idx % len(color_palette)]
+            color_idx += 1
+        
+        # Apply baseline correction (detrending)
+        if apply_detrend:
+            contraction_detrended = detrend(contraction_values, type='linear')
+        else:
+            contraction_detrended = contraction_values
+        
+        # Apply peak alignment
+        if apply_alignment and len(peak_indices) > 0:
+            # Align by first peak
+            first_peak_idx = peak_indices[0]
+            first_peak_time = time_ms[first_peak_idx]
+            aligned_time_ms = time_ms - first_peak_time
+        else:
+            # Just normalize to start at 0
+            aligned_time_ms = time_ms - time_ms[0]
+        
+        # Convert to seconds for display
+        time_s = aligned_time_ms / 1000.0
         
         # Add trace to plot
         fig.add_trace(go.Scatter(
             x=time_s,
-            y=contraction_values,
+            y=contraction_detrended,
             mode='lines',
             name=sample_id,
-            line=dict(width=1.5),
-            opacity=0.8
+            line=dict(width=1.5, color=color),
+            opacity=0.7
         ))
+        
+        # Collect summary statistics
+        summary_data.append({
+            "Sample": sample_id,
+            "Exposure": exposure if exposure else "N/A",
+            "Num Peaks": len(peak_indices),
+            "Mean Amplitude": f"{np.mean(contraction_detrended):.2f}",
+            "Std Amplitude": f"{np.std(contraction_detrended):.2f}",
+            "Min Amplitude": f"{np.min(contraction_detrended):.2f}",
+            "Max Amplitude": f"{np.max(contraction_detrended):.2f}",
+            "Duration (s)": f"{(time_ms[-1] - time_ms[0]) / 1000.0:.2f}",
+            "Data Points": len(contraction_values)
+        })
     
     # Update layout
+    title = "Overlaid Contraction Waveforms"
+    if apply_alignment and apply_detrend:
+        title += " (Peak-aligned & Detrended)"
+    elif apply_alignment:
+        title += " (Peak-aligned)"
+    elif apply_detrend:
+        title += " (Detrended)"
+    
+    x_axis_label = "Time relative to first peak (s)" if apply_alignment else "Time (s)"
+    y_axis_label = "Detrended Contraction (a.u.)" if apply_detrend else "Contraction Amplitude (a.u.)"
+    
     fig.update_layout(
-        title="Overlaid Contraction Waveforms",
-        xaxis_title="Time (s)",
-        yaxis_title="Contraction Amplitude (a.u.)",
+        title=title,
+        xaxis_title=x_axis_label,
+        yaxis_title=y_axis_label,
         hovermode='x unified',
         height=600,
         legend=dict(
@@ -1766,24 +1902,8 @@ def _render_tab_waveform_overlay(record_by_sample, all_samples):
     st.plotly_chart(fig, use_container_width=True)
     
     # Display summary statistics
-    st.markdown("### Summary Statistics")
-    summary_data = []
-    for sample_id in selected_samples:
-        if sample_id in record_by_sample:
-            record = record_by_sample[sample_id]
-            contraction_values = np.asarray(record.get("contraction_values", []), dtype=float)
-            if len(contraction_values) > 0:
-                summary_data.append({
-                    "Sample": sample_id,
-                    "Mean Amplitude": f"{np.mean(contraction_values):.2f}",
-                    "Std Amplitude": f"{np.std(contraction_values):.2f}",
-                    "Min Amplitude": f"{np.min(contraction_values):.2f}",
-                    "Max Amplitude": f"{np.max(contraction_values):.2f}",
-                    "Duration (s)": f"{(record['time_ms'][-1] - record['time_ms'][0]) / 1000.0:.2f}",
-                    "Data Points": len(contraction_values)
-                })
-    
     if summary_data:
+        st.markdown("### Summary Statistics")
         summary_df = pd.DataFrame(summary_data)
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
@@ -1850,6 +1970,16 @@ def main():
 
     sample_options = filtered_df["sample"].tolist()
     selected_sample = st.sidebar.selectbox("Fish sample", sample_options)
+    
+    # GroupBy Exposure toggle
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Display Options")
+    group_by_exposure = st.sidebar.checkbox(
+        "Group by Exposure",
+        value=False,
+        help="When enabled, show separate side-by-side graphs for each exposure (Phe and Terf)"
+    )
+    
     with st.sidebar.expander("Variables & abbreviations", expanded=False):
         st.markdown(VARIABLE_GLOSSARY_MARKDOWN)
     with st.sidebar.expander("Settings", expanded=False):
@@ -1914,23 +2044,23 @@ def main():
 
     if "dose" in tab_by_key:
         with tab_by_key["dose"]:
-            _render_tab_dose(filtered_records)
+            _render_tab_dose(filtered_records, group_by_exposure=group_by_exposure)
 
     if "hrv" in tab_by_key:
         with tab_by_key["hrv"]:
-            _render_tab_hrv(filtered_records)
+            _render_tab_hrv(filtered_records, group_by_exposure=group_by_exposure)
             
     if "amplitude" in tab_by_key:
         with tab_by_key["amplitude"]:
-            _render_tab_contraction_amplitude(filtered_df)
+            _render_tab_contraction_amplitude(filtered_df, group_by_exposure=group_by_exposure)
             
     if "force" in tab_by_key:
         with tab_by_key["force"]:
-            _render_tab_contraction_force(filtered_df, selected_sample, record_by_sample)
+            _render_tab_contraction_force(filtered_df, selected_sample, record_by_sample, group_by_exposure=group_by_exposure)
             
     if "transients" in tab_by_key:
         with tab_by_key["transients"]:
-            _render_tab_transients(filtered_df)
+            _render_tab_transients(filtered_df, group_by_exposure=group_by_exposure)
 
     if "data_table" in tab_by_key:
         with tab_by_key["data_table"]:
@@ -1942,7 +2072,7 @@ def main():
             
     if "graphs" in tab_by_key:
         with tab_by_key["graphs"]:
-            _render_tab_graphs(filtered_df)
+            _render_tab_graphs(filtered_df, group_by_exposure=group_by_exposure)
 
     if "distribution" in tab_by_key:
         with tab_by_key["distribution"]:
