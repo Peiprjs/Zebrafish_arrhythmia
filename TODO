@@ -1,5 +1,5 @@
-- Make a graph that combines selected cases' mean contraction waveforms
+- Make a graph that combines selected cases' mean contraction waveforms. Align the first beat, and remove baseline wandering
 - Make a new tab with bar graphs and other graphs that show the distribution of cases (quantity of each case)
 - Add the ability to GroupBy Exposure, and make two graphs at the same time, one for each exposure type
 - When making a graph with both exposures, make sure to add a way to see which concentrations belong to Phe and which to Terf
-
+- Move ANOVA to the statistics tab, and calculate it at runtime. The ANOVA should be within the different concentrations of each exposure, both together, and Grouped By Exposure. Do also ANOVA testing of the SDNN and rMDSSD

@@ -10,9 +10,11 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
+from scipy.stats import f_oneway
 
 from functions import paired_ttest_pvalue
 from data_analysis import (
@@ -28,11 +30,15 @@ MODEL_OUTPUT_FILES = {
     "logistic_regression_summary": "logistic_regression_summary.csv",
     "logistic_regression_coefficients": "logistic_regression_coefficients.csv",
     "linear_trend_summary": "linear_trend_summary.csv",
-    "anova_concentration_summary": "anova_concentration_summary.csv",
     "unsupervised_cluster_summary": "unsupervised_cluster_summary.csv",
     "unsupervised_assignments": "unsupervised_assignments.csv",
     "unsupervised_pca_variance": "unsupervised_pca_variance.csv",
     "unsupervised_pca_loadings": "unsupervised_pca_loadings.csv",
+}
+EXPOSURE_COLORS = {
+    "Phe": {"primary": "tab:blue", "light": "#6baed6", "dark": "#08519c"},
+    "Terf": {"primary": "tab:red", "light": "#fc9272", "dark": "#a50f15"},
+    "0": {"primary": "tab:gray", "light": "#969696", "dark": "#525252"},
 }
 DEFAULT_EXCLUDED_CASES = [
     "Terf_0_1.2",
@@ -96,6 +102,23 @@ def _safe_float_sort_key(value):
         return (0, float(value))
     except (TypeError, ValueError):
         return (1, str(value))
+
+
+def _get_exposure_color(exposure, shade="primary"):
+    """Get color for exposure type from predefined color scheme."""
+    if exposure in EXPOSURE_COLORS:
+        return EXPOSURE_COLORS[exposure].get(shade, EXPOSURE_COLORS[exposure]["primary"])
+    return "tab:gray"
+
+
+def _filter_records_by_exposure(records, exposure):
+    """Filter records list by exposure type."""
+    return [r for r in records if r.get("exposure") == exposure]
+
+
+def _filter_df_by_exposure(df, exposure):
+    """Filter dataframe by exposure type."""
+    return df[df["exposure"] == exposure].copy()
 
 
 def _group_label(record):
@@ -230,6 +253,126 @@ def _group_significance(grouped_values, labels, group_by, alpha=0.05):
     return significance_flags, p_values, "* paired t-test p < 0.05 vs rest mean"
 
 
+def _calculate_anova_for_metric(df, metric, exposure_filter=None, group_by_exposure=False):
+    """
+    Calculate one-way ANOVA for a given metric.
+    
+    Args:
+        df: DataFrame with sample data
+        metric: Column name to test
+        exposure_filter: If provided, filter to only this exposure type
+        group_by_exposure: If True, group by exposure instead of concentration
+    
+    Returns:
+        dict with F-statistic, p-value, df_between, df_within, eta_squared, interpretation
+    """
+    working_df = df.copy()
+    
+    if exposure_filter is not None:
+        working_df = working_df[working_df["exposure"] == exposure_filter]
+    
+    if len(working_df) < 3:
+        return None
+    
+    group_column = "exposure" if group_by_exposure else "concentration"
+    
+    groups = []
+    group_labels = []
+    for name, group_df in working_df.groupby(group_column):
+        values = group_df[metric].dropna().values
+        if len(values) >= 2:
+            groups.append(values)
+            group_labels.append(str(name))
+    
+    if len(groups) < 2:
+        return None
+    
+    f_stat, p_value = f_oneway(*groups)
+    
+    n_total = sum(len(g) for g in groups)
+    n_groups = len(groups)
+    df_between = n_groups - 1
+    df_within = n_total - n_groups
+    
+    grand_mean = np.mean(np.concatenate(groups))
+    ss_between = sum(len(g) * (np.mean(g) - grand_mean)**2 for g in groups)
+    ss_total = sum((val - grand_mean)**2 for g in groups for val in g)
+    
+    eta_squared = ss_between / ss_total if ss_total > 0 else 0.0
+    
+    if p_value < 0.001:
+        interpretation = "Highly significant (p < 0.001)"
+    elif p_value < 0.01:
+        interpretation = "Very significant (p < 0.01)"
+    elif p_value < 0.05:
+        interpretation = "Significant (p < 0.05)"
+    else:
+        interpretation = "Not significant (p ≥ 0.05)"
+    
+    return {
+        "F-statistic": f_stat,
+        "p-value": p_value,
+        "df_between": df_between,
+        "df_within": df_within,
+        "eta_squared": eta_squared,
+        "interpretation": interpretation,
+        "n_groups": n_groups,
+        "n_total": n_total,
+    }
+
+
+def _run_all_anova_tests(df, metrics):
+    """
+    Run ANOVA tests for all specified metrics across different groupings.
+    
+    Returns:
+        dict of DataFrames with results for different test types
+    """
+    results = {
+        "phe_only": [],
+        "terf_only": [],
+        "both_exposures": [],
+        "grouped_by_exposure": [],
+    }
+    
+    for metric in metrics:
+        if metric not in df.columns or not pd.api.types.is_numeric_dtype(df[metric]):
+            continue
+        
+        phe_result = _calculate_anova_for_metric(df, metric, exposure_filter="Phe")
+        if phe_result:
+            phe_result["metric"] = metric
+            phe_result["test_type"] = "Phe only (by concentration)"
+            results["phe_only"].append(phe_result)
+        
+        terf_result = _calculate_anova_for_metric(df, metric, exposure_filter="Terf")
+        if terf_result:
+            terf_result["metric"] = metric
+            terf_result["test_type"] = "Terf only (by concentration)"
+            results["terf_only"].append(terf_result)
+        
+        both_result = _calculate_anova_for_metric(df, metric, exposure_filter=None, group_by_exposure=False)
+        if both_result:
+            both_result["metric"] = metric
+            both_result["test_type"] = "Both exposures (by concentration)"
+            results["both_exposures"].append(both_result)
+        
+        exposure_result = _calculate_anova_for_metric(df, metric, exposure_filter=None, group_by_exposure=True)
+        if exposure_result:
+            exposure_result["metric"] = metric
+            exposure_result["test_type"] = "Grouped by exposure"
+            results["grouped_by_exposure"].append(exposure_result)
+    
+    result_dfs = {}
+    for key, result_list in results.items():
+        if result_list:
+            result_dfs[key] = pd.DataFrame(result_list)
+        else:
+            result_dfs[key] = None
+    
+    return result_dfs
+
+
 @st.cache_data(show_spinner=False)
 def _load_dashboard_data(results_dir):
     records = load_all_sample_timeseries(results_dir, verbose=False)
@@ -362,14 +505,22 @@ def _plot_fish_hrv(record):
     plt.close(fig)
 
 
-def _plot_group_aggregate(grid_pct, aggregate, title, y_label):
+def _plot_group_aggregate(grid_pct, aggregate, title, y_label, group_by_exposure=False):
     fig, ax = plt.subplots(figsize=(11, 4.5))
     for label in sorted(aggregate.keys()):
         mean = aggregate[label]["mean"]
         std = aggregate[label]["std"]
         n = aggregate[label]["n"]
-        ax.plot(grid_pct, mean, linewidth=1.5, label=f"{label} (n={n})")
-        ax.fill_between(grid_pct, mean - std, mean + std, alpha=0.2)
+        
+        # Extract exposure from label (format: "Exposure_Concentration")
+        if group_by_exposure:
+            exposure = label.split("_")[0] if "_" in label else "0"
+            color = _get_exposure_color(exposure)
+            ax.plot(grid_pct, mean, linewidth=1.5, label=f"{label} (n={n})", color=color)
+            ax.fill_between(grid_pct, mean - std, mean + std, alpha=0.2, color=color)
+        else:
+            ax.plot(grid_pct, mean, linewidth=1.5, label=f"{label} (n={n})")
+            ax.fill_between(grid_pct, mean - std, mean + std, alpha=0.2)
 
     ax.set_xlabel("Relative progress through recording (%)")
     ax.set_ylabel(y_label)
@@ -391,49 +542,147 @@ def _render_tab_fish(selected_sample, record_by_sample):
     _plot_fish_profile(fish_record)
     _plot_fish_hrv(fish_record)
 
-def _render_tab_dose(filtered_records):
-    grid_pct, aggregate = _aggregate_group_profiles(
-        filtered_records,
-        time_key="time_ms",
-        value_key="contraction_values",
-    )
-    if not aggregate:
-        st.info("Not enough data to compute dose-level contraction profiles.")
+def _render_tab_dose(filtered_records, group_by_exposure=False):
+    if group_by_exposure:
+        # Get unique exposures from filtered records
+        exposures = sorted(set(r.get("exposure", "0") for r in filtered_records))
+        
+        if len(exposures) <= 1:
+            # Only one exposure, show single graph
+            grid_pct, aggregate = _aggregate_group_profiles(
+                filtered_records,
+                time_key="time_ms",
+                value_key="contraction_values",
+            )
+            if not aggregate:
+                st.info("Not enough data to compute dose-level contraction profiles.")
+            else:
+                _plot_group_aggregate(
+                    grid_pct,
+                    aggregate,
+                    title="Mean contraction waveform by exposure and dose (+/-1 SD)",
+                    y_label="Contraction amplitude (a.u.)",
+                    group_by_exposure=True,
+                )
+        else:
+            # Multiple exposures, show side-by-side
+            cols = st.columns(len(exposures))
+            for idx, exposure in enumerate(exposures):
+                exposure_records = _filter_records_by_exposure(filtered_records, exposure)
+                grid_pct, aggregate = _aggregate_group_profiles(
+                    exposure_records,
+                    time_key="time_ms",
+                    value_key="contraction_values",
+                )
+                with cols[idx]:
+                    if not aggregate:
+                        st.info(f"Not enough data for {exposure}.")
+                    else:
+                        _plot_group_aggregate(
+                            grid_pct,
+                            aggregate,
+                            title=f"{exposure} - Contraction waveform by dose (+/-1 SD)",
+                            y_label="Contraction amplitude (a.u.)",
+                            group_by_exposure=True,
+                        )
     else:
-        _plot_group_aggregate(
-            grid_pct,
-            aggregate,
-            title="Mean contraction waveform by exposure and dose (+/-1 SD)",
-            y_label="Contraction amplitude (a.u.)",
+        # Original behavior - show all together with color coding
+        grid_pct, aggregate = _aggregate_group_profiles(
+            filtered_records,
+            time_key="time_ms",
+            value_key="contraction_values",
         )
+        if not aggregate:
+            st.info("Not enough data to compute dose-level contraction profiles.")
+        else:
+            _plot_group_aggregate(
+                grid_pct,
+                aggregate,
+                title="Mean contraction waveform by exposure and dose (+/-1 SD)",
+                y_label="Contraction amplitude (a.u.)",
+                group_by_exposure=True,
+            )
 
-def _render_tab_hrv(filtered_records):
-    grid_pct, aggregate = _aggregate_group_profiles(
-        filtered_records,
-        time_key="rolling_rmssd_time_ms",
-        value_key="rolling_rmssd_ms",
-    )
-    if not aggregate:
-        st.info(
-            "Not enough beats to compute rolling root mean square of "
-            "successive interval differences for selected samples."
-        )
+def _render_tab_hrv(filtered_records, group_by_exposure=False):
+    if group_by_exposure:
+        # Get unique exposures from filtered records
+        exposures = sorted(set(r.get("exposure", "0") for r in filtered_records))
+        
+        if len(exposures) <= 1:
+            # Only one exposure, show single graph
+            grid_pct, aggregate = _aggregate_group_profiles(
+                filtered_records,
+                time_key="rolling_rmssd_time_ms",
+                value_key="rolling_rmssd_ms",
+            )
+            if not aggregate:
+                st.info(
+                    "Not enough beats to compute rolling root mean square of "
+                    "successive interval differences for selected samples."
+                )
+            else:
+                _plot_group_aggregate(
+                    grid_pct,
+                    aggregate,
+                    title=(
+                        "Mean rolling root mean square of successive interval differences "
+                        "by exposure and dose (+/-1 SD)"
+                    ),
+                    y_label="Rolling root mean square of successive interval differences (ms)",
+                    group_by_exposure=True,
+                )
+        else:
+            # Multiple exposures, show side-by-side
+            cols = st.columns(len(exposures))
+            for idx, exposure in enumerate(exposures):
+                exposure_records = _filter_records_by_exposure(filtered_records, exposure)
+                grid_pct, aggregate = _aggregate_group_profiles(
+                    exposure_records,
+                    time_key="rolling_rmssd_time_ms",
+                    value_key="rolling_rmssd_ms",
+                )
+                with cols[idx]:
+                    if not aggregate:
+                        st.info(f"Not enough data for {exposure}.")
+                    else:
+                        _plot_group_aggregate(
+                            grid_pct,
+                            aggregate,
+                            title=f"{exposure} - Rolling RMSSD by dose (+/-1 SD)",
+                            y_label="Rolling root mean square of successive interval differences (ms)",
+                            group_by_exposure=True,
+                        )
     else:
-        _plot_group_aggregate(
-            grid_pct,
-            aggregate,
-            title=(
-                "Mean rolling root mean square of successive interval differences "
-                "by exposure and dose (+/-1 SD)"
-            ),
-            y_label="Rolling root mean square of successive interval differences (ms)",
+        # Original behavior - show all together with color coding
+        grid_pct, aggregate = _aggregate_group_profiles(
+            filtered_records,
+            time_key="rolling_rmssd_time_ms",
+            value_key="rolling_rmssd_ms",
         )
+        if not aggregate:
+            st.info(
+                "Not enough beats to compute rolling root mean square of "
+                "successive interval differences for selected samples."
+            )
+        else:
+            _plot_group_aggregate(
+                grid_pct,
+                aggregate,
+                title=(
+                    "Mean rolling root mean square of successive interval differences "
+                    "by exposure and dose (+/-1 SD)"
+                ),
+                y_label="Rolling root mean square of successive interval differences (ms)",
+                group_by_exposure=True,
+            )
 
 
 def _render_tab_data_table(filtered_df):
     st.dataframe(filtered_df.reset_index(drop=True), use_container_width=True)
 
 def _render_tab_statistical_analysis(filtered_df):
+    st.subheader("Statistical Analysis")
+    
     numeric_cols = [
         col for col in filtered_df.columns
         if pd.api.types.is_numeric_dtype(filtered_df[col])
@@ -441,6 +690,118 @@ def _render_tab_statistical_analysis(filtered_df):
     if not numeric_cols:
         st.info("No numeric columns available for statistical analysis.")
         return
+    
+    st.markdown("### ANOVA Tests")
+    st.markdown("""
+    Analysis of Variance (ANOVA) tests whether there are significant differences between group means.
+    Tests are performed for key HRV metrics across different groupings.
+    """)
+    
+    anova_metrics = ["mean_ibi_ms", "sdnn_ms", "rmssd_ms"]
+    available_anova_metrics = [m for m in anova_metrics if m in filtered_df.columns]
+    
+    if not available_anova_metrics:
+        st.warning("Required HRV metrics (mean_ibi_ms, sdnn_ms, rmssd_ms) not found in data.")
+    else:
+        with st.spinner("Calculating ANOVA tests..."):
+            anova_results = _run_all_anova_tests(filtered_df, available_anova_metrics)
+        
+        tabs = st.tabs([
+            "Phe Only (by Concentration)",
+            "Terf Only (by Concentration)",
+            "Both Exposures (by Concentration)",
+            "Grouped by Exposure"
+        ])
+        
+        with tabs[0]:
+            st.markdown("**ANOVA for Phe exposure only, grouped by concentration**")
+            if anova_results["phe_only"] is not None:
+                display_df = anova_results["phe_only"][["metric", "F-statistic", "p-value", 
+                                                          "df_between", "df_within", "eta_squared", 
+                                                          "n_groups", "n_total", "interpretation"]].copy()
+                display_df["F-statistic"] = display_df["F-statistic"].round(3)
+                display_df["p-value"] = display_df["p-value"].apply(lambda x: f"{x:.4g}")
+                display_df["eta_squared"] = display_df["eta_squared"].round(4)
+                st.dataframe(display_df, use_container_width=True)
+                
+                sig_results = anova_results["phe_only"][anova_results["phe_only"]["p-value"] < 0.05]
+                if not sig_results.empty:
+                    st.success(f"Found {len(sig_results)} significant result(s) at p < 0.05")
+                else:
+                    st.info("No significant differences found at p < 0.05")
+            else:
+                st.info("Not enough data for ANOVA test")
+        
+        with tabs[1]:
+            st.markdown("**ANOVA for Terf exposure only, grouped by concentration**")
+            if anova_results["terf_only"] is not None:
+                display_df = anova_results["terf_only"][["metric", "F-statistic", "p-value", 
+                                                           "df_between", "df_within", "eta_squared", 
+                                                           "n_groups", "n_total", "interpretation"]].copy()
+                display_df["F-statistic"] = display_df["F-statistic"].round(3)
+                display_df["p-value"] = display_df["p-value"].apply(lambda x: f"{x:.4g}")
+                display_df["eta_squared"] = display_df["eta_squared"].round(4)
+                st.dataframe(display_df, use_container_width=True)
+                
+                sig_results = anova_results["terf_only"][anova_results["terf_only"]["p-value"] < 0.05]
+                if not sig_results.empty:
+                    st.success(f"Found {len(sig_results)} significant result(s) at p < 0.05")
+                else:
+                    st.info("No significant differences found at p < 0.05")
+            else:
+                st.info("Not enough data for ANOVA test")
+        
+        with tabs[2]:
+            st.markdown("**ANOVA for both exposures together, grouped by concentration**")
+            if anova_results["both_exposures"] is not None:
+                display_df = anova_results["both_exposures"][["metric", "F-statistic", "p-value", 
+                                                                "df_between", "df_within", "eta_squared", 
+                                                                "n_groups", "n_total", "interpretation"]].copy()
+                display_df["F-statistic"] = display_df["F-statistic"].round(3)
+                display_df["p-value"] = display_df["p-value"].apply(lambda x: f"{x:.4g}")
+                display_df["eta_squared"] = display_df["eta_squared"].round(4)
+                st.dataframe(display_df, use_container_width=True)
+                
+                sig_results = anova_results["both_exposures"][anova_results["both_exposures"]["p-value"] < 0.05]
+                if not sig_results.empty:
+                    st.success(f"Found {len(sig_results)} significant result(s) at p < 0.05")
+                else:
+                    st.info("No significant differences found at p < 0.05")
+            else:
+                st.info("Not enough data for ANOVA test")
+        
+        with tabs[3]:
+            st.markdown("**ANOVA comparing Phe vs Terf exposures**")
+            if anova_results["grouped_by_exposure"] is not None:
+                display_df = anova_results["grouped_by_exposure"][["metric", "F-statistic", "p-value", 
+                                                                     "df_between", "df_within", "eta_squared", 
+                                                                     "n_groups", "n_total", "interpretation"]].copy()
+                display_df["F-statistic"] = display_df["F-statistic"].round(3)
+                display_df["p-value"] = display_df["p-value"].apply(lambda x: f"{x:.4g}")
+                display_df["eta_squared"] = display_df["eta_squared"].round(4)
+                st.dataframe(display_df, use_container_width=True)
+                
+                sig_results = anova_results["grouped_by_exposure"][anova_results["grouped_by_exposure"]["p-value"] < 0.05]
+                if not sig_results.empty:
+                    st.success(f"Found {len(sig_results)} significant result(s) at p < 0.05")
+                else:
+                    st.info("No significant differences found at p < 0.05")
+            else:
+                st.info("Not enough data for ANOVA test")
+        
+        st.markdown("""
+        **Interpretation Guide:**
+        - **F-statistic**: Ratio of between-group variance to within-group variance. Higher values indicate greater differences.
+        - **p-value**: Probability of observing this result by chance. p < 0.05 typically indicates significance.
+        - **df_between**: Degrees of freedom between groups (k - 1, where k = number of groups)
+        - **df_within**: Degrees of freedom within groups (N - k, where N = total samples)
+        - **eta_squared (η²)**: Effect size. 0.01 = small, 0.06 = medium, 0.14 = large effect
+        - **n_groups**: Number of groups compared
+        - **n_total**: Total number of samples across all groups
+        """)
+    
+    st.markdown("---")
+    st.markdown("### Pairwise Comparisons (T-tests)")
         
     preferred_metrics = [
         "mean_ibi_ms",
@@ -451,7 +812,7 @@ def _render_tab_statistical_analysis(filtered_df):
         (metric_name for metric_name in preferred_metrics if metric_name in numeric_cols),
         numeric_cols[0],
     )
-    metric = st.selectbox("Metric for statistical tests", numeric_cols, index=numeric_cols.index(default_metric), key="stat_metric")
+    metric = st.selectbox("Metric for pairwise tests", numeric_cols, index=numeric_cols.index(default_metric), key="stat_metric")
     group_options = ["exposure", "concentration"]
     default_group_by = "concentration"
     group_by = st.selectbox(
@@ -496,7 +857,8 @@ def _render_tab_statistical_analysis(filtered_df):
         st.caption(significance_label)
         st.dataframe(stat_df, use_container_width=True)
 
-def _render_tab_graphs(filtered_df):
+
+def _render_tab_graphs(filtered_df, group_by_exposure=False):
     numeric_cols = [
         col for col in filtered_df.columns
         if pd.api.types.is_numeric_dtype(filtered_df[col])
@@ -524,8 +886,32 @@ def _render_tab_graphs(filtered_df):
         key="graph_group"
     )
 
+    if group_by_exposure and group_by == "concentration":
+        # Show side-by-side graphs for each exposure
+        exposures = sorted(filtered_df["exposure"].unique())
+        
+        if len(exposures) <= 1:
+            # Only one exposure, show single graph
+            _render_single_graph(filtered_df, metric, group_by, group_by_exposure=True)
+        else:
+            # Multiple exposures, show side-by-side
+            cols = st.columns(len(exposures))
+            for idx, exposure in enumerate(exposures):
+                exposure_df = _filter_df_by_exposure(filtered_df, exposure)
+                with cols[idx]:
+                    st.markdown(f"**{exposure}**")
+                    _render_single_graph(exposure_df, metric, group_by, group_by_exposure=True, exposure=exposure)
+    else:
+        # Original behavior
+        _render_single_graph(filtered_df, metric, group_by, group_by_exposure=False)
+
+
+def _render_single_graph(filtered_df, metric, group_by, group_by_exposure=False, exposure=None):
+    """Helper function to render a single boxplot graph."""
     grouped_values = []
     labels = []
+    exposures_for_colors = []
+    
     if group_by == "concentration":
         grouped_items = sorted(
             filtered_df.groupby(group_by),
@@ -543,6 +929,13 @@ def _render_tab_graphs(filtered_df):
             continue
         grouped_values.append(values)
         labels.append(str(name))
+        # Get the exposure for this group (for coloring)
+        if group_by_exposure and group_by == "concentration":
+            if exposure:
+                exposures_for_colors.append(exposure)
+            else:
+                group_exposures = group["exposure"].unique()
+                exposures_for_colors.append(group_exposures[0] if len(group_exposures) > 0 else "0")
 
     if grouped_values:
         significance_flags, p_values, significance_label = _group_significance(
@@ -555,54 +948,89 @@ def _render_tab_graphs(filtered_df):
                 display_labels.append(f"{label}{significance_marker}\n(p={p_value:.3g})")
             else:
                 display_labels.append(f"{label}{significance_marker}\n(p=n/a)")
+        
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.boxplot(
-            grouped_values,
-            tick_labels=display_labels,
-            showmeans=True,
-            patch_artist=True,
-            boxprops={"facecolor": "tab:blue", "alpha": 0.25, "edgecolor": "tab:blue"},
-            medianprops={"color": "tab:orange", "linewidth": 1.8},
-            meanprops={
-                "marker": "D",
-                "markerfacecolor": "tab:green",
-                "markeredgecolor": "tab:green",
-                "markersize": 5,
-            },
-        )
+        
+        if group_by_exposure and group_by == "concentration" and exposures_for_colors:
+            # Create box plots with exposure-specific colors
+            bp = ax.boxplot(
+                grouped_values,
+                tick_labels=display_labels,
+                showmeans=True,
+                patch_artist=True,
+                medianprops={"color": "tab:orange", "linewidth": 1.8},
+                meanprops={
+                    "marker": "D",
+                    "markerfacecolor": "tab:green",
+                    "markeredgecolor": "tab:green",
+                    "markersize": 5,
+                },
+            )
+            # Color each box based on its exposure
+            for patch, exp in zip(bp['boxes'], exposures_for_colors):
+                color = _get_exposure_color(exp)
+                patch.set_facecolor(color)
+                patch.set_alpha(0.25)
+                patch.set_edgecolor(color)
+        else:
+            ax.boxplot(
+                grouped_values,
+                tick_labels=display_labels,
+                showmeans=True,
+                patch_artist=True,
+                boxprops={"facecolor": "tab:blue", "alpha": 0.25, "edgecolor": "tab:blue"},
+                medianprops={"color": "tab:orange", "linewidth": 1.8},
+                meanprops={
+                    "marker": "D",
+                    "markerfacecolor": "tab:green",
+                    "markeredgecolor": "tab:green",
+                    "markersize": 5,
+                },
+            )
+        
         metric_label = _pretty_metric_label(metric)
         group_label = _pretty_group_label(group_by)
-        ax.set_title(f"Distribution of {metric_label} by {group_label}")
+        title = f"Distribution of {metric_label} by {group_label}"
+        if exposure:
+            title = f"{exposure} - {title}"
+        ax.set_title(title)
         ax.set_xlabel(group_label.capitalize())
         ax.set_ylabel(metric_label)
         ax.grid(axis="y", alpha=0.2)
         ax.tick_params(axis="x", labelsize=8)
-        ax.legend(
-            handles=[
-                Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.25, label="IQR (Q1-Q3)"),
-                Line2D([0], [0], color="tab:orange", lw=1.8, label="Median"),
-                Line2D(
-                    [0],
-                    [0],
-                    marker="D",
-                    color="tab:green",
-                    markerfacecolor="tab:green",
-                    linestyle="None",
-                    label="Mean",
-                ),
-                Line2D(
-                    [0],
-                    [0],
-                    marker="*",
-                    color="crimson",
-                    markerfacecolor="crimson",
-                    linestyle="None",
-                    label=significance_label,
-                ),
-            ],
-            loc="best",
-            fontsize=8,
-        )
+        
+        legend_handles = [
+            Line2D([0], [0], color="tab:orange", lw=1.8, label="Median"),
+            Line2D(
+                [0],
+                [0],
+                marker="D",
+                color="tab:green",
+                markerfacecolor="tab:green",
+                linestyle="None",
+                label="Mean",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="crimson",
+                markerfacecolor="crimson",
+                linestyle="None",
+                label=significance_label,
+            ),
+        ]
+        
+        if group_by_exposure and group_by == "concentration" and exposures_for_colors:
+            # Add exposure color legend
+            unique_exposures = sorted(set(exposures_for_colors))
+            for exp in unique_exposures:
+                color = _get_exposure_color(exp)
+                legend_handles.insert(0, Patch(facecolor=color, edgecolor=color, alpha=0.25, label=f"{exp} IQR"))
+        else:
+            legend_handles.insert(0, Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.25, label="IQR (Q1-Q3)"))
+        
+        ax.legend(handles=legend_handles, loc="best", fontsize=8)
         plt.xticks(rotation=30, ha="right")
         plt.tight_layout()
         st.pyplot(fig)
@@ -610,7 +1038,7 @@ def _render_tab_graphs(filtered_df):
 
 
     
-def _plot_metric_boxplots(filtered_df, metrics, title_prefix):
+def _plot_metric_boxplots(filtered_df, metrics, title_prefix, group_by_exposure=False):
     """Helper to plot boxplots for a set of metrics grouped by concentration."""
     group_by = "concentration"
     
@@ -621,6 +1049,7 @@ def _plot_metric_boxplots(filtered_df, metrics, title_prefix):
             
         grouped_values = []
         labels = []
+        exposures_for_colors = []
         grouped_items = sorted(
             filtered_df.groupby(group_by),
             key=lambda item: _safe_float_sort_key(item[0]),
@@ -632,6 +1061,10 @@ def _plot_metric_boxplots(filtered_df, metrics, title_prefix):
                 continue
             grouped_values.append(values)
             labels.append(str(name))
+            # Get the exposure for this group (for coloring)
+            if group_by_exposure:
+                group_exposures = group["exposure"].unique()
+                exposures_for_colors.append(group_exposures[0] if len(group_exposures) > 0 else "0")
 
         if not grouped_values:
             continue
@@ -648,20 +1081,44 @@ def _plot_metric_boxplots(filtered_df, metrics, title_prefix):
                 display_labels.append(f"{label}{significance_marker}\n(p=n/a)")
                 
         fig, ax = plt.subplots(figsize=(10, 4))
-        ax.boxplot(
-            grouped_values,
-            tick_labels=display_labels,
-            showmeans=True,
-            patch_artist=True,
-            boxprops={"facecolor": "tab:blue", "alpha": 0.25, "edgecolor": "tab:blue"},
-            medianprops={"color": "tab:orange", "linewidth": 1.8},
-            meanprops={
-                "marker": "D",
-                "markerfacecolor": "tab:green",
-                "markeredgecolor": "tab:green",
-                "markersize": 5,
-            },
-        )
+        
+        if group_by_exposure and exposures_for_colors:
+            # Create box plots with exposure-specific colors
+            bp = ax.boxplot(
+                grouped_values,
+                tick_labels=display_labels,
+                showmeans=True,
+                patch_artist=True,
+                medianprops={"color": "tab:orange", "linewidth": 1.8},
+                meanprops={
+                    "marker": "D",
+                    "markerfacecolor": "tab:green",
+                    "markeredgecolor": "tab:green",
+                    "markersize": 5,
+                },
+            )
+            # Color each box based on its exposure
+            for patch, exp in zip(bp['boxes'], exposures_for_colors):
+                color = _get_exposure_color(exp)
+                patch.set_facecolor(color)
+                patch.set_alpha(0.25)
+                patch.set_edgecolor(color)
+        else:
+            ax.boxplot(
+                grouped_values,
+                tick_labels=display_labels,
+                showmeans=True,
+                patch_artist=True,
+                boxprops={"facecolor": "tab:blue", "alpha": 0.25, "edgecolor": "tab:blue"},
+                medianprops={"color": "tab:orange", "linewidth": 1.8},
+                meanprops={
+                    "marker": "D",
+                    "markerfacecolor": "tab:green",
+                    "markeredgecolor": "tab:green",
+                    "markersize": 5,
+                },
+            )
+        
         metric_label = _pretty_metric_label(metric)
         group_label = _pretty_group_label(group_by)
         ax.set_title(f"{title_prefix}: {metric_label} by {group_label}")
@@ -669,43 +1126,50 @@ def _plot_metric_boxplots(filtered_df, metrics, title_prefix):
         ax.set_ylabel(metric_label)
         ax.grid(axis="y", alpha=0.2)
         ax.tick_params(axis="x", labelsize=8)
-        ax.legend(
-            handles=[
-                Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.25, label="IQR (Q1-Q3)"),
-                Line2D([0], [0], color="tab:orange", lw=1.8, label="Median"),
-                Line2D(
-                    [0],
-                    [0],
-                    marker="D",
-                    color="tab:green",
-                    markerfacecolor="tab:green",
-                    linestyle="None",
-                    label="Mean",
-                ),
-                Line2D(
-                    [0],
-                    [0],
-                    marker="*",
-                    color="crimson",
-                    markerfacecolor="crimson",
-                    linestyle="None",
-                    label=significance_label,
-                ),
-            ],
-            loc="best",
-            fontsize=8,
-        )
+        
+        legend_handles = [
+            Line2D([0], [0], color="tab:orange", lw=1.8, label="Median"),
+            Line2D(
+                [0],
+                [0],
+                marker="D",
+                color="tab:green",
+                markerfacecolor="tab:green",
+                linestyle="None",
+                label="Mean",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="crimson",
+                markerfacecolor="crimson",
+                linestyle="None",
+                label=significance_label,
+            ),
+        ]
+        
+        if group_by_exposure and exposures_for_colors:
+            # Add exposure color legend
+            unique_exposures = sorted(set(exposures_for_colors))
+            for exp in unique_exposures:
+                color = _get_exposure_color(exp)
+                legend_handles.insert(0, Patch(facecolor=color, edgecolor=color, alpha=0.25, label=f"{exp} IQR"))
+        else:
+            legend_handles.insert(0, Patch(facecolor="tab:blue", edgecolor="tab:blue", alpha=0.25, label="IQR (Q1-Q3)"))
+        
+        ax.legend(handles=legend_handles, loc="best", fontsize=8)
         plt.xticks(rotation=30, ha="right")
         plt.tight_layout()
         st.pyplot(fig)
         plt.close(fig)
 
-def _render_tab_contraction_amplitude(filtered_df):
+def _render_tab_contraction_amplitude(filtered_df, group_by_exposure=False):
     st.subheader("Contraction Amplitude Analysis")
     metrics = ["contraction_amplitude_mean", "contraction_amplitude_range"]
-    _plot_metric_boxplots(filtered_df, metrics, "Amplitude Distribution")
+    _plot_metric_boxplots(filtered_df, metrics, "Amplitude Distribution", group_by_exposure=group_by_exposure)
     
-def _render_tab_contraction_force(filtered_df, selected_sample, record_by_sample):
+def _render_tab_contraction_force(filtered_df, selected_sample, record_by_sample, group_by_exposure=False):
     st.subheader("Contraction Force Analysis")
     st.markdown(f"**Force Profile for {selected_sample}**")
     if selected_sample in record_by_sample:
@@ -717,9 +1181,9 @@ def _render_tab_contraction_force(filtered_df, selected_sample, record_by_sample
         "force_of_contraction_std_au",
         "force_of_contraction_peak_au"
     ]
-    _plot_metric_boxplots(filtered_df, metrics, "Force Distribution")
+    _plot_metric_boxplots(filtered_df, metrics, "Force Distribution", group_by_exposure=group_by_exposure)
     
-def _render_tab_transients(filtered_df):
+def _render_tab_transients(filtered_df, group_by_exposure=False):
     st.subheader("Transients Analysis")
     metrics = [
         "transient_rise_time_mean_ms",
@@ -727,7 +1191,7 @@ def _render_tab_transients(filtered_df):
         "transient_duration_mean_ms",
         "transient_fwhm_mean_ms"
     ]
-    _plot_metric_boxplots(filtered_df, metrics, "Transient Distribution")
+    _plot_metric_boxplots(filtered_df, metrics, "Transient Distribution", group_by_exposure=group_by_exposure)
 
 def _render_tab_models(output_dir, model_tables):
     st.caption(f"Model outputs loaded from `{output_dir}`")
@@ -757,13 +1221,6 @@ def _render_tab_models(output_dir, model_tables):
         if tables["logistic_regression_coefficients"] is not None:
             st.markdown("**Logistic regression coefficients**")
             st.dataframe(tables["logistic_regression_coefficients"], use_container_width=True)
-
-    st.subheader("ANOVA concentration summary")
-    anova_summary = tables["anova_concentration_summary"]
-    if anova_summary is None:
-        st.info("No ANOVA output files found. Run `python data_analysis.py` to generate them.")
-    else:
-        st.dataframe(anova_summary, use_container_width=True)
 
     st.subheader("Unsupervised learning summary")
     cluster_summary = tables["unsupervised_cluster_summary"]
@@ -840,17 +1297,6 @@ def _render_tab_conclusions(filtered_df, model_tables):
             f"- Logistic model summary: accuracy={acc:.3f}, McFadden R²={pseudo_r2:.3f}."
         )
 
-    anova_summary = model_tables.get("anova_concentration_summary")
-    if anova_summary is not None and not anova_summary.empty:
-        significant_anova = anova_summary[anova_summary["p_value"] < 0.05]
-        if not significant_anova.empty:
-            for _, row in significant_anova.iterrows():
-                st.markdown(
-                    f"- ANOVA significant finding for exposure **{row['exposure']}**: "
-                    f"Concentration affects **{row['metric']}** "
-                    f"(p={row['p_value']:.4g})."
-                )
-
     cluster_summary = model_tables["unsupervised_cluster_summary"]
     if cluster_summary is not None and not cluster_summary.empty:
         highest_cluster = cluster_summary.sort_values(
@@ -863,6 +1309,264 @@ def _render_tab_conclusions(filtered_df, model_tables):
             f"arrhythmia_rate={float(highest_cluster['arrhythmia_rate']):.3f} "
             f"(n={int(highest_cluster['n_samples'])})."
         )
+
+
+def _render_tab_distribution(filtered_df):
+    """Render case distribution statistics with interactive bar charts."""
+    st.subheader("Case Distribution Analysis")
+    
+    # Filter options for distribution views
+    st.markdown("### Distribution Filters")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        show_arrhythmia_only = st.checkbox("Show only arrhythmic cases", value=False, key="dist_arrhythmia_filter")
+    with col2:
+        show_percentages = st.checkbox("Show percentages on bars", value=True, key="dist_show_pct")
+    
+    # Apply arrhythmia filter if selected
+    display_df = filtered_df.copy()
+    if show_arrhythmia_only:
+        if "Arrhymia" in display_df.columns:
+            display_df = display_df[display_df["Arrhymia"] == True]
+            st.info(f"Showing {len(display_df)} arrhythmic cases out of {len(filtered_df)} total cases")
+        else:
+            st.warning("Arrhythmia column not found in data")
+    
+    if len(display_df) == 0:
+        st.warning("No cases match the current filters.")
+        return
+    
+    # 1. Distribution by Exposure Type
+    st.markdown("### Distribution by Exposure Type")
+    if "exposure" in display_df.columns:
+        exposure_counts = display_df["exposure"].value_counts().reset_index()
+        exposure_counts.columns = ["Exposure", "Count"]
+        exposure_counts["Percentage"] = (exposure_counts["Count"] / exposure_counts["Count"].sum() * 100).round(1)
+        
+        fig1 = px.bar(
+            exposure_counts,
+            x="Exposure",
+            y="Count",
+            title="Number of Cases by Exposure Type",
+            color="Exposure",
+            text="Count" if not show_percentages else exposure_counts.apply(
+                lambda row: f"{row['Count']} ({row['Percentage']:.1f}%)", axis=1
+            ),
+            color_discrete_sequence=px.colors.qualitative.Set2
+        )
+        fig1.update_traces(textposition="outside")
+        fig1.update_layout(showlegend=False, height=500)
+        st.plotly_chart(fig1, use_container_width=True)
+        
+        with st.expander("Show data table"):
+            st.dataframe(exposure_counts, use_container_width=True)
+    else:
+        st.info("Exposure column not found in data")
+    
+    # 2. Distribution by Concentration Level
+    st.markdown("### Distribution by Concentration Level")
+    if "concentration" in display_df.columns:
+        # Sort concentrations numerically
+        conc_counts = display_df["concentration"].value_counts().reset_index()
+        conc_counts.columns = ["Concentration", "Count"]
+        conc_counts["Percentage"] = (conc_counts["Count"] / conc_counts["Count"].sum() * 100).round(1)
+        
+        # Try to sort numerically
+        try:
+            conc_counts["Concentration_num"] = pd.to_numeric(conc_counts["Concentration"])
+            conc_counts = conc_counts.sort_values("Concentration_num")
+            conc_counts = conc_counts.drop("Concentration_num", axis=1)
+        except:
+            conc_counts = conc_counts.sort_values("Concentration")
+        
+        fig2 = px.bar(
+            conc_counts,
+            x="Concentration",
+            y="Count",
+            title="Number of Cases by Concentration Level",
+            color="Count",
+            text="Count" if not show_percentages else conc_counts.apply(
+                lambda row: f"{row['Count']} ({row['Percentage']:.1f}%)", axis=1
+            ),
+            color_continuous_scale="Blues"
+        )
+        fig2.update_traces(textposition="outside")
+        fig2.update_layout(height=500)
+        st.plotly_chart(fig2, use_container_width=True)
+        
+        with st.expander("Show data table"):
+            st.dataframe(conc_counts, use_container_width=True)
+    else:
+        st.info("Concentration column not found in data")
+    
+    # 3. Distribution by Exposure + Concentration Combination
+    st.markdown("### Distribution by Exposure × Concentration")
+    if "exposure" in display_df.columns and "concentration" in display_df.columns:
+        combo_counts = display_df.groupby(["exposure", "concentration"]).size().reset_index(name="Count")
+        combo_counts["Percentage"] = (combo_counts["Count"] / combo_counts["Count"].sum() * 100).round(1)
+        combo_counts["Label"] = combo_counts["exposure"] + "_" + combo_counts["concentration"].astype(str)
+        
+        # Sort by exposure then concentration
+        try:
+            combo_counts["concentration_num"] = pd.to_numeric(combo_counts["concentration"])
+            combo_counts = combo_counts.sort_values(["exposure", "concentration_num"])
+            combo_counts = combo_counts.drop("concentration_num", axis=1)
+        except:
+            combo_counts = combo_counts.sort_values(["exposure", "concentration"])
+        
+        fig3 = px.bar(
+            combo_counts,
+            x="Label",
+            y="Count",
+            title="Number of Cases by Exposure and Concentration",
+            color="exposure",
+            text="Count" if not show_percentages else combo_counts.apply(
+                lambda row: f"{row['Count']} ({row['Percentage']:.1f}%)", axis=1
+            ),
+            labels={"Label": "Exposure_Concentration"},
+            color_discrete_sequence=px.colors.qualitative.Set2
+        )
+        fig3.update_traces(textposition="outside")
+        fig3.update_layout(height=500, xaxis_tickangle=-45)
+        st.plotly_chart(fig3, use_container_width=True)
+        
+        with st.expander("Show data table"):
+            st.dataframe(combo_counts.drop("Label", axis=1), use_container_width=True)
+    else:
+        st.info("Exposure and/or concentration columns not found in data")
+    
+    # 4. Distribution by Well
+    st.markdown("### Distribution by Well")
+    if "well" in display_df.columns:
+        well_counts = display_df["well"].value_counts().reset_index()
+        well_counts.columns = ["Well", "Count"]
+        well_counts["Percentage"] = (well_counts["Count"] / well_counts["Count"].sum() * 100).round(1)
+        well_counts = well_counts.sort_values("Well")
+        
+        fig4 = px.bar(
+            well_counts,
+            x="Well",
+            y="Count",
+            title="Number of Cases by Well",
+            color="Count",
+            text="Count" if not show_percentages else well_counts.apply(
+                lambda row: f"{row['Count']} ({row['Percentage']:.1f}%)", axis=1
+            ),
+            color_continuous_scale="Greens"
+        )
+        fig4.update_traces(textposition="outside")
+        fig4.update_layout(height=500)
+        st.plotly_chart(fig4, use_container_width=True)
+        
+        with st.expander("Show data table"):
+            st.dataframe(well_counts, use_container_width=True)
+    else:
+        st.info("Well column not found in data")
+    
+    # 5. Arrhythmia Distribution (if available)
+    st.markdown("### Arrhythmia Status Distribution")
+    if "Arrhymia" in display_df.columns:
+        arrhythmia_counts = display_df["Arrhymia"].value_counts().reset_index()
+        arrhythmia_counts.columns = ["Arrhythmia", "Count"]
+        arrhythmia_counts["Arrhythmia"] = arrhythmia_counts["Arrhythmia"].map({True: "Arrhythmic", False: "Normal"})
+        arrhythmia_counts["Percentage"] = (arrhythmia_counts["Count"] / arrhythmia_counts["Count"].sum() * 100).round(1)
+        
+        fig5 = px.bar(
+            arrhythmia_counts,
+            x="Arrhythmia",
+            y="Count",
+            title="Distribution of Arrhythmia Status",
+            color="Arrhythmia",
+            text="Count" if not show_percentages else arrhythmia_counts.apply(
+                lambda row: f"{row['Count']} ({row['Percentage']:.1f}%)", axis=1
+            ),
+            color_discrete_map={"Arrhythmic": "#ff6b6b", "Normal": "#51cf66"}
+        )
+        fig5.update_traces(textposition="outside")
+        fig5.update_layout(showlegend=False, height=500)
+        st.plotly_chart(fig5, use_container_width=True)
+        
+        with st.expander("Show data table"):
+            st.dataframe(arrhythmia_counts, use_container_width=True)
+        
+        # Arrhythmia by exposure
+        st.markdown("### Arrhythmia Rate by Exposure")
+        if "exposure" in display_df.columns:
+            arrhythmia_by_exposure = display_df.groupby("exposure")["Arrhymia"].agg([
+                ("Total", "count"),
+                ("Arrhythmic", "sum"),
+            ]).reset_index()
+            arrhythmia_by_exposure["Arrhythmia_Rate_%"] = (
+                arrhythmia_by_exposure["Arrhythmic"] / arrhythmia_by_exposure["Total"] * 100
+            ).round(1)
+            
+            fig6 = px.bar(
+                arrhythmia_by_exposure,
+                x="exposure",
+                y="Arrhythmia_Rate_%",
+                title="Arrhythmia Rate by Exposure Type (%)",
+                color="exposure",
+                text="Arrhythmia_Rate_%",
+                labels={"exposure": "Exposure", "Arrhythmia_Rate_%": "Arrhythmia Rate (%)"},
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            fig6.update_traces(textposition="outside", texttemplate='%{text:.1f}%')
+            fig6.update_layout(showlegend=False, height=500)
+            st.plotly_chart(fig6, use_container_width=True)
+            
+            with st.expander("Show data table"):
+                st.dataframe(arrhythmia_by_exposure, use_container_width=True)
+        
+        # Arrhythmia by concentration
+        st.markdown("### Arrhythmia Rate by Concentration")
+        if "concentration" in display_df.columns:
+            arrhythmia_by_conc = display_df.groupby("concentration")["Arrhymia"].agg([
+                ("Total", "count"),
+                ("Arrhythmic", "sum"),
+            ]).reset_index()
+            arrhythmia_by_conc["Arrhythmia_Rate_%"] = (
+                arrhythmia_by_conc["Arrhythmic"] / arrhythmia_by_conc["Total"] * 100
+            ).round(1)
+            
+            # Sort by concentration
+            try:
+                arrhythmia_by_conc["concentration_num"] = pd.to_numeric(arrhythmia_by_conc["concentration"])
+                arrhythmia_by_conc = arrhythmia_by_conc.sort_values("concentration_num")
+                arrhythmia_by_conc = arrhythmia_by_conc.drop("concentration_num", axis=1)
+            except:
+                arrhythmia_by_conc = arrhythmia_by_conc.sort_values("concentration")
+            
+            fig7 = px.bar(
+                arrhythmia_by_conc,
+                x="concentration",
+                y="Arrhythmia_Rate_%",
+                title="Arrhythmia Rate by Concentration Level (%)",
+                color="Arrhythmia_Rate_%",
+                text="Arrhythmia_Rate_%",
+                labels={"concentration": "Concentration", "Arrhythmia_Rate_%": "Arrhythmia Rate (%)"},
+                color_continuous_scale="Reds"
+            )
+            fig7.update_traces(textposition="outside", texttemplate='%{text:.1f}%')
+            fig7.update_layout(height=500)
+            st.plotly_chart(fig7, use_container_width=True)
+            
+            with st.expander("Show data table"):
+                st.dataframe(arrhythmia_by_conc, use_container_width=True)
+    else:
+        st.info("Arrhythmia column not found in data")
+    
+    # Summary statistics
+    st.markdown("### Summary Statistics")
+    summary_cols = st.columns(4)
+    summary_cols[0].metric("Total Cases", len(display_df))
+    if "exposure" in display_df.columns:
+        summary_cols[1].metric("Exposure Types", display_df["exposure"].nunique())
+    if "concentration" in display_df.columns:
+        summary_cols[2].metric("Concentration Levels", display_df["concentration"].nunique())
+    if "Arrhymia" in display_df.columns:
+        arrhythmia_rate = (display_df["Arrhymia"].sum() / len(display_df) * 100)
+        summary_cols[3].metric("Overall Arrhythmia Rate", f"{arrhythmia_rate:.1f}%")
 
 
 def _render_tab_technical(results_dir, output_dir):
@@ -990,6 +1694,100 @@ def _render_tab_technical(results_dir, output_dir):
     )
 
 
+def _render_tab_waveform_overlay(record_by_sample, all_samples):
+    """Render tab for overlaying mean contraction waveforms from selected samples."""
+    st.subheader("Waveform Overlay Utility")
+    st.markdown(
+        "Select multiple samples to overlay their mean contraction waveforms. "
+        "This allows visual comparison of cardiac contraction patterns across different samples."
+    )
+    
+    # Sample selection widget
+    selected_samples = st.multiselect(
+        "Select samples to overlay",
+        options=sorted(all_samples),
+        default=[],
+        help="Choose multiple samples to compare their contraction waveforms"
+    )
+    
+    if not selected_samples:
+        st.info("Please select at least one sample to display waveforms.")
+        return
+    
+    if len(selected_samples) > 20:
+        st.warning("You've selected more than 20 samples. The plot may be cluttered.")
+    
+    # Load data for selected samples and compute mean waveforms
+    import plotly.graph_objects as go
+    
+    fig = go.Figure()
+    
+    for sample_id in selected_samples:
+        if sample_id not in record_by_sample:
+            st.warning(f"Sample {sample_id} not found in loaded data.")
+            continue
+            
+        record = record_by_sample[sample_id]
+        time_ms = np.asarray(record.get("time_ms", []), dtype=float)
+        contraction_values = np.asarray(record.get("contraction_values", []), dtype=float)
+        
+        if len(time_ms) < 2 or len(contraction_values) < 2:
+            st.warning(f"Insufficient data for sample {sample_id}")
+            continue
+        
+        # Normalize time to start at 0
+        time_s = (time_ms - time_ms[0]) / 1000.0  # Convert to seconds
+        
+        # Add trace to plot
+        fig.add_trace(go.Scatter(
+            x=time_s,
+            y=contraction_values,
+            mode='lines',
+            name=sample_id,
+            line=dict(width=1.5),
+            opacity=0.8
+        ))
+    
+    # Update layout
+    fig.update_layout(
+        title="Overlaid Contraction Waveforms",
+        xaxis_title="Time (s)",
+        yaxis_title="Contraction Amplitude (a.u.)",
+        hovermode='x unified',
+        height=600,
+        legend=dict(
+            yanchor="top",
+            y=0.99,
+            xanchor="left",
+            x=1.01
+        )
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Display summary statistics
+    st.markdown("### Summary Statistics")
+    summary_data = []
+    for sample_id in selected_samples:
+        if sample_id in record_by_sample:
+            record = record_by_sample[sample_id]
+            contraction_values = np.asarray(record.get("contraction_values", []), dtype=float)
+            if len(contraction_values) > 0:
+                summary_data.append({
+                    "Sample": sample_id,
+                    "Mean Amplitude": f"{np.mean(contraction_values):.2f}",
+                    "Std Amplitude": f"{np.std(contraction_values):.2f}",
+                    "Min Amplitude": f"{np.min(contraction_values):.2f}",
+                    "Max Amplitude": f"{np.max(contraction_values):.2f}",
+                    "Duration (s)": f"{(record['time_ms'][-1] - record['time_ms'][0]) / 1000.0:.2f}",
+                    "Data Points": len(contraction_values)
+                })
+    
+    if summary_data:
+        summary_df = pd.DataFrame(summary_data)
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+
 def main():
     st.set_page_config(page_title="Zebrafish HRV Dashboard", layout="wide")
     _apply_text_wrap_css()
@@ -1065,6 +1863,8 @@ def main():
             ("Data table", "data_table"),
             ("Statistical analysis", "statistical_analysis"),
             ("Graphs", "graphs"),
+            ("Distribution", "distribution"),
+            ("Waveform Overlay", "waveform_overlay"),
             ("Model summaries", "models"),
             ("Conclusions", "conclusions"),
             ("Technical architecture", "technical")
@@ -1143,6 +1943,15 @@ def main():
     if "graphs" in tab_by_key:
         with tab_by_key["graphs"]:
             _render_tab_graphs(filtered_df)
+
+    if "distribution" in tab_by_key:
+        with tab_by_key["distribution"]:
+            _render_tab_distribution(filtered_df)
+
+    if "waveform_overlay" in tab_by_key:
+        with tab_by_key["waveform_overlay"]:
+            all_samples = list(record_by_sample.keys())
+            _render_tab_waveform_overlay(record_by_sample, all_samples)
 
     if "models" in tab_by_key:
         with tab_by_key["models"]:
