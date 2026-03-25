@@ -4,6 +4,7 @@ Usage:
     streamlit run gui_app.py
 """
 
+import logging
 import os
 from tqdm import tqdm
 
@@ -16,6 +17,13 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from scipy.stats import f_oneway
 from scipy.signal import detrend
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 from functions import paired_ttest_pvalue
 from data_analysis import (
@@ -376,20 +384,27 @@ def _run_all_anova_tests(df, metrics):
 
 @st.cache_data(show_spinner=False)
 def _load_dashboard_data(results_dir):
+    logger.info(f"Loading dashboard data from {results_dir}")
     records = load_all_sample_timeseries(results_dir, verbose=False)
+    logger.debug(f"Processing {len(records)} records into summary DataFrame")
     summary_df = pd.DataFrame(records)[SUMMARY_COLUMNS].copy()
+    logger.info(f"Loaded {len(records)} timeseries records and created summary with {len(summary_df)} rows")
     return records, summary_df
 
 
 @st.cache_data(show_spinner=False)
 def _load_model_output_tables(output_dir):
+    logger.debug(f"Loading model output tables from {output_dir}")
     tables = {}
     for key, filename in MODEL_OUTPUT_FILES.items():
         path = os.path.join(output_dir, filename)
         if os.path.isfile(path):
             tables[key] = pd.read_csv(path)
+            logger.debug(f"Loaded {key} from {filename}")
         else:
             tables[key] = None
+            logger.debug(f"File not found for {key}: {filename}")
+    logger.info(f"Loaded {sum(1 for v in tables.values() if v is not None)}/{len(MODEL_OUTPUT_FILES)} model output files")
     return tables
 
 
@@ -1909,6 +1924,7 @@ def _render_tab_waveform_overlay(record_by_sample, all_samples):
 
 
 def main():
+    logger.info("Starting Zebrafish HRV Dashboard")
     st.set_page_config(page_title="Zebrafish HRV Dashboard", layout="wide")
     _apply_text_wrap_css()
     st.title("Zebrafish contraction and HRV dashboard")
@@ -1925,9 +1941,12 @@ def main():
 
     results_dir = os.path.abspath(st.session_state["results_dir"])
     output_dir = os.path.abspath(st.session_state["output_dir"])
+    logger.info(f"Loading data from results_dir: {results_dir}")
     try:
         records, summary_df = _load_dashboard_data(results_dir)
+        logger.info(f"Successfully loaded {len(records)} sample records and {len(summary_df)} summary rows")
     except Exception as exc:
+        logger.error(f"Failed to load data from {results_dir}: {exc}")
         st.error(f"Failed to load data from {results_dir}: {exc}")
         st.stop()
 
@@ -1963,10 +1982,14 @@ def main():
     )
     if excluded_cases:
         filtered_df = filtered_df[~filtered_df["sample"].isin(excluded_cases)].copy()
+        logger.debug(f"Excluded {len(excluded_cases)} cases")
 
     if filtered_df.empty:
+        logger.warning("No samples match the selected filters")
         st.warning("No samples match the selected filters.")
         st.stop()
+
+    logger.info(f"Applied filters - Exposures: {selected_exposures}, Concentrations: {selected_concentrations}, Final samples: {len(filtered_df)}")
 
     sample_options = filtered_df["sample"].tolist()
     selected_sample = st.sidebar.selectbox("Fish sample", sample_options)
@@ -2040,14 +2063,17 @@ def main():
 
     if "fish" in tab_by_key:
         with tab_by_key["fish"]:
+            logger.debug("Rendering Fish tab")
             _render_tab_fish(selected_sample, record_by_sample)
 
     if "dose" in tab_by_key:
         with tab_by_key["dose"]:
+            logger.debug(f"Rendering Dose Profile tab (group_by_exposure={group_by_exposure})")
             _render_tab_dose(filtered_records, group_by_exposure=group_by_exposure)
 
     if "hrv" in tab_by_key:
         with tab_by_key["hrv"]:
+            logger.debug(f"Rendering HRV Over Time tab (group_by_exposure={group_by_exposure})")
             _render_tab_hrv(filtered_records, group_by_exposure=group_by_exposure)
             
     if "amplitude" in tab_by_key:
@@ -2068,18 +2094,22 @@ def main():
             
     if "statistical_analysis" in tab_by_key:
         with tab_by_key["statistical_analysis"]:
+            logger.debug("Rendering Statistical Analysis tab")
             _render_tab_statistical_analysis(filtered_df)
             
     if "graphs" in tab_by_key:
         with tab_by_key["graphs"]:
+            logger.debug(f"Rendering Graphs tab (group_by_exposure={group_by_exposure})")
             _render_tab_graphs(filtered_df, group_by_exposure=group_by_exposure)
 
     if "distribution" in tab_by_key:
         with tab_by_key["distribution"]:
+            logger.debug("Rendering Distribution tab")
             _render_tab_distribution(filtered_df)
 
     if "waveform_overlay" in tab_by_key:
         with tab_by_key["waveform_overlay"]:
+            logger.debug("Rendering Waveform Overlay tab")
             all_samples = list(record_by_sample.keys())
             _render_tab_waveform_overlay(record_by_sample, all_samples)
 
